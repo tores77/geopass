@@ -184,13 +184,20 @@ def dashboard_stats(
         .select("puntos")
         .eq("tenant_id", tid)
         .gt("puntos", 0)
+        .limit(10000)
         .execute()
         .data
     )
     puntos_total = sum(r["puntos"] for r in tx_rows)
 
     nivel_rows = (
-        sb.table("socios").select("nivel").eq("tenant_id", tid).eq("activo", True).execute().data
+        sb.table("socios")
+        .select("nivel")
+        .eq("tenant_id", tid)
+        .eq("activo", True)
+        .limit(10000)
+        .execute()
+        .data
     )
     nivel_dist: dict = {}
     for r in nivel_rows:
@@ -245,6 +252,7 @@ def list_socios(
         .select("*")
         .eq("tenant_id", user.tenant_id)
         .order("created_at", desc=True)
+        .limit(2000)
         .execute()
         .data
     )
@@ -274,6 +282,7 @@ def get_socio(
         .eq("tenant_id", user.tenant_id)
         .eq("socio_id", socio_id)
         .order("created_at", desc=True)
+        .limit(200)
         .execute()
         .data
     )
@@ -356,7 +365,7 @@ def send_notification(
 ):
     tid = user.tenant_id
 
-    q = sb.table("socios").select("*").eq("tenant_id", tid).eq("activo", True)
+    q = sb.table("socios").select("*").eq("tenant_id", tid).eq("activo", True).limit(5000)
     if body.socio_id:
         q = q.eq("id", body.socio_id)
     socios = q.execute().data
