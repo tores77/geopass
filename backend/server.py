@@ -367,6 +367,7 @@ def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_cu
         # still record the attempt — count by recipients reached logically
         total = len(socios)
 
+    tipo = "wallet_update" if body.canal == "wallet" else "push_manual"
     inserted = (
         sb.table("notificaciones")
         .insert(
@@ -374,7 +375,7 @@ def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_cu
                 "tenant_id": tid,
                 "titulo": body.titulo,
                 "mensaje": body.mensaje,
-                "tipo": "broadcast" if not body.socio_id else "individual",
+                "tipo": tipo,
                 "canal": body.canal,
                 "total_enviadas": total,
                 "total_abiertas": 0,

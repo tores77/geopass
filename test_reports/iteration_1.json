@@ -1,0 +1,53 @@
+{
+  "summary": "End-to-end testing of GeoPass MVP (backend + frontend). 23/23 backend pytest cases pass when called sequentially (auth, dashboard, socios CRUD, points, notifications, public registro, duplicate detection, 404/401/409 paths). Frontend: login, bad-credentials toast, dashboard, /socios, /aliados, /configuracion (QR), /notificaciones, public /registro/umania-demo (success state with 500 puntos + Añadir a Wallet), /registro/no-such-slug error, and protected route redirect ALL work. CRITICAL backend bug found: under burst concurrency (Dashboard's Promise.all of 3 calls fired right after login redirect, plus a parallel /auth/me from Layout), the shared global supabase-py client raises httpx.RemoteProtocolError ('Server disconnected') over its HTTP/2 connection — FastAPI returns 500 to ~3 of the parallel calls, producing a red React error overlay on first dashboard load. After page reload all calls succeed.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "/api/auth/me, /api/dashboard/stats, /api/dashboard/recent-socios, /api/dashboard/recent-notifications",
+        "issue": "httpx.RemoteProtocolError: Server disconnected → FastAPI 500. Triggered by concurrent requests sharing the module-level supabase Client (sb / sb_anon) over HTTP/2. Reproduces 100% of the time on first dashboard load right after login (Promise.all + Layout calling /auth/me concurrently). Stack trace points to httpcore http2._read_incoming_data inside supabase.auth.get_user. Backend code wraps the call in try/except for the validation flow but the underlying httpx HTTP/2 connection error escapes BEFORE that try/except path because it also occurs in sb.table(...).execute() (the dashboard endpoints).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Dashboard.jsx",
+        "issue": "When the parallel api.get(...) calls fail on first load (because of the backend concurrency bug above), Dashboard.jsx's Promise.all rejects and the AxiosError bubbles up unhandled — React's dev error overlay covers the whole page. The try/finally only resets loading; it has no catch. Recommend wrapping each call with .catch and showing per-card error states or a single 'Reintentar' banner.",
+        "selector": "Dashboard load() function",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_geopass_api.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix backend Supabase client concurrency: either (a) instantiate supabase.create_client() per request (FastAPI dependency), (b) use the supabase async client (acreate_client) with httpx AsyncClient, or (c) force HTTP/1.1 by passing http2=False to a custom httpx client. The current sync HTTP/2 connection cannot be safely shared across uvicorn workers handling parallel requests — it disconnects under load.",
+    "Add a .catch on Dashboard.jsx Promise.all (and other multi-call pages) so a transient 500 doesn't trigger React's red error overlay; show a toast + 'Reintentar' UX instead.",
+    "(Defensive) In get_current_user, currently httpx.RemoteProtocolError isn't always caught because auth.get_user runs first; consider catching network errors explicitly and returning 503 'Servicio temporalmente no disponible' instead of 500."
+  ],
+  "critical_code_review_comments": [
+    "server.py: global sb / sb_anon clients are NOT safe for concurrent requests (sync httpx HTTP/2). Must move to async or per-request clients.",
+    "server.py:_create_socio_full silently swallows pass-insert and welcome-tx failures. If those rows fail, the socio still exists without a pass — fine for MVP but should be logged with tenant_id/socio_id and surfaced in Configuracion.",
+    "server.py:send_notification 'total = max(sent_wallet, sent_fcm)' for canal='ambos' double-counts only when push_token AND wallet_pass_serial are both set; with 0/0 it falls back to len(socios). Mock-phase OK but needs revision when real FCM lands.",
+    "Frontend: Dashboard, Socios, SocioDetail Promise.all chains lack .catch handlers — every transient backend hiccup will produce a React dev overlay in production builds (still surfaces as blank cards in prod).",
+    "Frontend: api.js fetches the Supabase session on every request. For high-frequency endpoints consider caching the token in memory and refreshing on 401."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/test_geopass_api.py"
+  ],
+  "success_rate": {"backend": "100% (23/23 pytest, sequential); ~25% under burst concurrency (3/4 calls 500)",  "frontend": "~90% (all flows verified; dashboard's first-load error overlay is the only blocker)"},
+  "test_credentials": "pere@umanialabs.com / 123456Ab!! (works; tenant=umania-demo; rol=superadmin) — read from /app/memory/test_credentials.md",
+  "seed_data_creation": "Created TEST_-prefixed socios via backend (TEST_socio_*, TEST_reg_*, TEST_dup_*, TEST_uifr_*) and a few TEST notifications (TEST Hola/W/F). Dashboard now shows 3 socios + 3 notifications. Safe to leave or be cleaned later.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend pytest suite at /app/backend/tests/test_geopass_api.py covers all endpoints in the request — run `python -m pytest /app/backend/tests/ -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. The KEY remaining issue is the Supabase client concurrency bug — verify the fix by hard-loading /dashboard several times and checking backend logs for 'RemoteProtocolError: Server disconnected'. Also re-verify the dashboard does NOT show the red React error overlay on first load after login. Public registro UI fields use data-testid={registro-nombre, registro-email, registro-telefono, registro-submit}. Login uses data-testid={login-email, login-password, login-submit}.",
+  "rca_of_the_issue": "Root cause: /app/backend/server.py creates supabase.Client instances at import time (sb, sb_anon). The supabase-py SyncClient uses httpx with HTTP/2 (multiplexed connection). Uvicorn handles 4 concurrent FastAPI requests in the same process; all of them call sb.table(...).execute() / sb_anon.auth.get_user() through the same shared HTTP/2 connection. Under burst concurrency the H2 stream state corrupts → httpcore raises RemoteProtocolError('Server disconnected') → FastAPI returns 500. Reproduction: log in via UI; the first /dashboard/* + /auth/me Promise.all returns ~3x 500. Mitigation options: (1) replace global clients with FastAPI Depends factory creating a per-request Client(); (2) switch to acreate_client + AsyncClient and async endpoints; (3) pass a custom httpx Client(http2=False) to supabase to force HTTP/1.1, eliminating stream-state races (simplest fix)."
+}
