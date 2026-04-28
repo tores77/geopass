@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 2 — VERIFICATION of iteration_1's CRITICAL Supabase concurrency fix and Dashboard .catch wrapper. Backend pytest suite 23/23 PASS (sequential). NEW concurrency test (test_concurrency.py) runs 5 bursts of 4 parallel calls + 24 parallel calls → ALL 200 OK, ZERO 500s. Frontend: login → dashboard loads with ALL 4 stat cards populated (7 socios, 6 notifs, 2800 puntos, BASICO×7) with NO React error overlay on first load NOR across 5 consecutive reloads. Zero page errors, zero JS exceptions. Full nav flow validated: /socios (list + filters + search), socio detail (transacciones + puntos), /notificaciones (6 entries), /aliados, /configuracion (QR present), public /registro/umania-demo (success state with 500 puntos + Añadir a Wallet CTA), /registro/no-such-slug (shows 'Tarjeta no disponible'), logout & protected redirect. Known trade-off (already flagged by main agent): every request creates a fresh Supabase client → ~9–11s latency per endpoint, so the UI needs generous waits (10–12s) for Socios/Notificaciones/Aliados first loads — functional but slow.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "all authenticated endpoints", "issue": "High latency (~9-11s per request) because sb_dep/anon_dep creates a fresh supabase.create_client on every request — safe but slow. For production consider HTTP/1.1 (http2=False) on a single shared client, or lightweight token-cached async client."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/socios, /notificaciones, /aliados first load", "issues": ["'Cargando...' spinner visible for ~8-10s due to backend latency; consider skeleton loaders or optimistic UI"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_geopass_api.py",
+    "/app/backend/tests/test_concurrency.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional, perf) Re-introduce a shared supabase client BUT force HTTP/1.1 by passing a custom httpx.Client(http2=False) — avoids the stream-state race that caused the original RemoteProtocolError while keeping latency low (~200ms vs 9-11s).",
+    "(Nice-to-have UX) Replace 'Cargando...' plain text with skeleton rows on /socios and /notificaciones so the ~10s first-load feels less broken."
+  ],
+  "critical_code_review_comments": [
+    "server.py sb_dep/anon_dep creates a new Client per request — correct and safe for concurrency but trades ~9-11s per call. The underlying fix is valid; perf optimisation is a follow-up.",
+    "Dashboard.jsx safe(p) wrapper correctly swallows per-call errors and returns null — confirmed: 5 reloads produce no overlay and no unhandled rejections.",
+    "No data-testid on 'Nuevo socio' and 'Enviar mensaje' top-bar buttons (Dashboard.jsx). Tests had to fall back to text-based selectors. Recommend data-testid='quick-add-socio' and 'quick-send-notification'.",
+    "No data-testid on Layout 'Cerrar sesión' logout button — falls back to text. Recommend data-testid='logout-button'.",
+    "Two harmless 404 resource loads in console on public /registro page (likely favicon or manifest asset). Non-blocking."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_concurrency.py"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23 pytest + 2/2 concurrency burst tests — 20 parallel calls + 24 parallel calls all 200 OK)",
+    "frontend": "100% of critical flows (login, dashboard no-overlay, 5 reloads no-overlay, socios list+detail, notificaciones list, aliados, configuracion QR, public registro success, bad-slug error, logout+protected-redirect)"
+  },
+  "test_credentials": "pere@umanialabs.com / 123456Ab!! (from /app/memory/test_credentials.md) — works; tenant umania-demo; rol superadmin.",
+  "seed_data_creation": "Added a few more TEST_-prefixed socios via backend concurrency tests + one via UI (TEST_uicb_*). Dashboard now shows 7 socios, 6 notifications, 2800 puntos total. Safe to leave.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Both critical bugs from iteration_1 are FIXED and re-verified. Backend pytest suite at /app/backend/tests/ (pytest + concurrency) covers all endpoints + the formerly-failing burst-concurrency case. Dashboard no longer throws the React error overlay on first load. The only remaining concern is latency (9-11s per authenticated call) caused by per-request Supabase client creation — functional for MVP but slow; main agent already noted this is acceptable. Frontend flows all work provided waits of 10-12s are used on navigation. Next agent does not need to re-verify this iteration; move on to new features or the optional perf/testid follow-ups listed in action_items.",
+  "rca_of_the_issue": "Iteration 1 RCA (now resolved): shared module-level supabase.Client used HTTP/2 multiplexed connection → uvicorn's burst-concurrency caused httpcore.RemoteProtocolError('Server disconnected') → 500s. Fix applied: FastAPI Depends(sb_dep)/Depends(anon_dep) factory creates a fresh Client per request. Verified by (a) 5×4 parallel-call bursts, (b) 24 parallel calls, (c) 5 consecutive dashboard reloads in real browser. Zero 500s, zero overlays. Trade-off: per-request client instantiation adds ~8-10s per call — optimal fix would be a custom httpx.Client(http2=False) singleton passed to supabase.create_client() to force HTTP/1.1 and eliminate the stream-state race without the latency penalty."
+}

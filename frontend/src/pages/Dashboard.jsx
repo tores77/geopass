@@ -48,15 +48,16 @@ export default function Dashboard() {
 
   const load = async () => {
     setLoading(true);
+    const safe = (p) => p.then((r) => r.data).catch(() => null);
     try {
       const [s, rs, rn] = await Promise.all([
-        api.get("/dashboard/stats"),
-        api.get("/dashboard/recent-socios"),
-        api.get("/dashboard/recent-notifications"),
+        safe(api.get("/dashboard/stats")),
+        safe(api.get("/dashboard/recent-socios")),
+        safe(api.get("/dashboard/recent-notifications")),
       ]);
-      setStats(s.data);
-      setRecentSocios(rs.data);
-      setRecentNotifs(rn.data);
+      setStats(s);
+      setRecentSocios(rs || []);
+      setRecentNotifs(rn || []);
     } finally {
       setLoading(false);
     }

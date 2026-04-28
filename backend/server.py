@@ -4,11 +4,16 @@ The frontend uses Supabase Auth (anon key) for login/session.
 ALL data operations go through this backend, which uses the
 service_role key to bypass RLS but ALWAYS filters by tenant_id
 derived from the JWT.
+
+NOTE: supabase-py sync clients wrap an httpx HTTP/2 connection that is NOT
+safe to share across concurrent FastAPI requests (H2 stream state races
+produce RemoteProtocolError). We therefore create a fresh Supabase Client
+per request via FastAPI dependencies.
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -26,17 +31,20 @@ SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 RAILWAY_API_URL = os.environ.get("RAILWAY_API_URL", "")
 
-# Service-role client (bypasses RLS) — used for all data operations.
-sb: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-
-# Anon client — used only to validate user JWTs.
-sb_anon: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("geopass")
 
 app = FastAPI(title="GeoPass API")
 api = APIRouter(prefix="/api")
+
+
+# ───────────────────────────── DI: Supabase clients ─────────────────────────────
+def sb_dep() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+
+def anon_dep() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 
 # ───────────────────────────── Auth helper ─────────────────────────────
@@ -49,15 +57,21 @@ class CurrentUser(BaseModel):
     tenant: dict
 
 
-def get_current_user(authorization: Optional[str] = Header(None)) -> CurrentUser:
+def get_current_user(
+    authorization: Optional[str] = Header(None),
+    sb: Client = Depends(sb_dep),
+    anon: Client = Depends(anon_dep),
+) -> CurrentUser:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Falta token de autenticación")
     token = authorization.split(" ", 1)[1]
     try:
-        res = sb_anon.auth.get_user(token)
+        res = anon.auth.get_user(token)
         user = res.user
         if not user:
             raise HTTPException(401, "Token inválido")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"JWT validation failed: {e}")
         raise HTTPException(401, "Sesión inválida o expirada")
@@ -141,9 +155,10 @@ def auth_me(user: CurrentUser = Depends(get_current_user)):
 
 # ───────────────────────────── Dashboard ─────────────────────────────
 @api.get("/dashboard/stats")
-def dashboard_stats(user: CurrentUser = Depends(get_current_user)):
+def dashboard_stats(
+    user: CurrentUser = Depends(get_current_user), sb: Client = Depends(sb_dep)
+):
     tid = user.tenant_id
-    # active socios
     socios_count = (
         sb.table("socios")
         .select("id", count="exact")
@@ -153,7 +168,6 @@ def dashboard_stats(user: CurrentUser = Depends(get_current_user)):
         .count
     ) or 0
 
-    # notifications this month
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
     notif_count = (
@@ -165,7 +179,6 @@ def dashboard_stats(user: CurrentUser = Depends(get_current_user)):
         .count
     ) or 0
 
-    # total points emitted
     tx_rows = (
         sb.table("transacciones_puntos")
         .select("puntos")
@@ -176,7 +189,6 @@ def dashboard_stats(user: CurrentUser = Depends(get_current_user)):
     )
     puntos_total = sum(r["puntos"] for r in tx_rows)
 
-    # nivel distribution
     nivel_rows = (
         sb.table("socios").select("nivel").eq("tenant_id", tid).eq("activo", True).execute().data
     )
@@ -194,8 +206,10 @@ def dashboard_stats(user: CurrentUser = Depends(get_current_user)):
 
 
 @api.get("/dashboard/recent-socios")
-def dashboard_recent_socios(user: CurrentUser = Depends(get_current_user)):
-    rows = (
+def dashboard_recent_socios(
+    user: CurrentUser = Depends(get_current_user), sb: Client = Depends(sb_dep)
+):
+    return (
         sb.table("socios")
         .select("*")
         .eq("tenant_id", user.tenant_id)
@@ -204,12 +218,13 @@ def dashboard_recent_socios(user: CurrentUser = Depends(get_current_user)):
         .execute()
         .data
     )
-    return rows
 
 
 @api.get("/dashboard/recent-notifications")
-def dashboard_recent_notifications(user: CurrentUser = Depends(get_current_user)):
-    rows = (
+def dashboard_recent_notifications(
+    user: CurrentUser = Depends(get_current_user), sb: Client = Depends(sb_dep)
+):
+    return (
         sb.table("notificaciones")
         .select("*")
         .eq("tenant_id", user.tenant_id)
@@ -218,13 +233,14 @@ def dashboard_recent_notifications(user: CurrentUser = Depends(get_current_user)
         .execute()
         .data
     )
-    return rows
 
 
 # ───────────────────────────── Socios ─────────────────────────────
 @api.get("/socios")
-def list_socios(user: CurrentUser = Depends(get_current_user)):
-    rows = (
+def list_socios(
+    user: CurrentUser = Depends(get_current_user), sb: Client = Depends(sb_dep)
+):
+    return (
         sb.table("socios")
         .select("*")
         .eq("tenant_id", user.tenant_id)
@@ -232,11 +248,14 @@ def list_socios(user: CurrentUser = Depends(get_current_user)):
         .execute()
         .data
     )
-    return rows
 
 
 @api.get("/socios/{socio_id}")
-def get_socio(socio_id: str, user: CurrentUser = Depends(get_current_user)):
+def get_socio(
+    socio_id: str,
+    user: CurrentUser = Depends(get_current_user),
+    sb: Client = Depends(sb_dep),
+):
     rows = (
         sb.table("socios")
         .select("*")
@@ -271,16 +290,21 @@ def get_socio(socio_id: str, user: CurrentUser = Depends(get_current_user)):
 
 
 @api.post("/socios")
-def create_socio(body: SocioCreate, user: CurrentUser = Depends(get_current_user)):
-    socio = _create_socio_full(user.tenant_id, body.nombre, body.email, body.telefono, welcome_points=0)
-    return socio
+def create_socio(
+    body: SocioCreate,
+    user: CurrentUser = Depends(get_current_user),
+    sb: Client = Depends(sb_dep),
+):
+    return _create_socio_full(sb, user.tenant_id, body.nombre, body.email, body.telefono, welcome_points=0)
 
 
 @api.post("/socios/{socio_id}/puntos")
 def add_points(
-    socio_id: str, body: PuntosAdd, user: CurrentUser = Depends(get_current_user)
+    socio_id: str,
+    body: PuntosAdd,
+    user: CurrentUser = Depends(get_current_user),
+    sb: Client = Depends(sb_dep),
 ):
-    # Verify socio belongs to tenant
     socio_rows = (
         sb.table("socios")
         .select("id, puntos")
@@ -310,8 +334,10 @@ def add_points(
 
 # ───────────────────────────── Notifications ─────────────────────────────
 @api.get("/notificaciones")
-def list_notifications(user: CurrentUser = Depends(get_current_user)):
-    rows = (
+def list_notifications(
+    user: CurrentUser = Depends(get_current_user), sb: Client = Depends(sb_dep)
+):
+    return (
         sb.table("notificaciones")
         .select("*")
         .eq("tenant_id", user.tenant_id)
@@ -320,14 +346,16 @@ def list_notifications(user: CurrentUser = Depends(get_current_user)):
         .execute()
         .data
     )
-    return rows
 
 
 @api.post("/notificaciones/send")
-def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_current_user)):
+def send_notification(
+    body: NotificationSend,
+    user: CurrentUser = Depends(get_current_user),
+    sb: Client = Depends(sb_dep),
+):
     tid = user.tenant_id
 
-    # Determine target socios
     q = sb.table("socios").select("*").eq("tenant_id", tid).eq("activo", True)
     if body.socio_id:
         q = q.eq("id", body.socio_id)
@@ -338,7 +366,6 @@ def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_cu
     sent_wallet = 0
     sent_fcm = 0
 
-    # Wallet pushes via Railway (graceful)
     if body.canal in ("wallet", "ambos"):
         for s in socios:
             serial = s.get("wallet_pass_serial")
@@ -355,7 +382,6 @@ def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_cu
             except Exception as e:
                 logger.info(f"Railway push failed (silenced): {e}")
 
-    # FCM pushes (mocked in Phase 1)
     if body.canal in ("fcm", "ambos"):
         for s in socios:
             if s.get("push_token"):
@@ -364,7 +390,6 @@ def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_cu
 
     total = max(sent_wallet, sent_fcm) if body.canal == "ambos" else sent_wallet + sent_fcm
     if total == 0:
-        # still record the attempt — count by recipients reached logically
         total = len(socios)
 
     tipo = "wallet_update" if body.canal == "wallet" else "push_manual"
@@ -396,24 +421,30 @@ def send_notification(body: NotificationSend, user: CurrentUser = Depends(get_cu
 
 # ───────────────────────────── Public: tenant + registro ─────────────────────────────
 @api.get("/public/tenants/{slug}")
-def public_tenant(slug: str):
-    rows = sb.table("tenants").select(
-        "id, nombre_marca, slug, logo_url, color_primario, color_secundario, activo"
-    ).eq("slug", slug).limit(1).execute().data
+def public_tenant(slug: str, sb: Client = Depends(sb_dep)):
+    rows = (
+        sb.table("tenants")
+        .select(
+            "id, nombre_marca, slug, logo_url, color_primario, color_secundario, activo"
+        )
+        .eq("slug", slug)
+        .limit(1)
+        .execute()
+        .data
+    )
     if not rows or not rows[0]["activo"]:
         raise HTTPException(404, "Tenant no encontrado")
     return rows[0]
 
 
 @api.post("/public/registro/{slug}")
-def public_registro(slug: str, body: RegistroPublico):
+def public_registro(slug: str, body: RegistroPublico, sb: Client = Depends(sb_dep)):
     rows = sb.table("tenants").select("*").eq("slug", slug).limit(1).execute().data
     if not rows or not rows[0]["activo"]:
         raise HTTPException(404, "Tenant no encontrado")
     tenant = rows[0]
     tid = tenant["id"]
 
-    # Reject duplicate email per tenant
     dup = (
         sb.table("socios")
         .select("id")
@@ -426,13 +457,18 @@ def public_registro(slug: str, body: RegistroPublico):
     if dup:
         raise HTTPException(409, "Este email ya está registrado en esta tarjeta")
 
-    socio = _create_socio_full(tid, body.nombre, body.email, body.telefono, welcome_points=500)
+    socio = _create_socio_full(sb, tid, body.nombre, body.email, body.telefono, welcome_points=500)
     return {"ok": True, "socio": socio, "tenant": tenant}
 
 
 # ───────────────────────────── Helpers ─────────────────────────────
 def _create_socio_full(
-    tenant_id: str, nombre: str, email: str, telefono: Optional[str], welcome_points: int
+    sb: Client,
+    tenant_id: str,
+    nombre: str,
+    email: str,
+    telefono: Optional[str],
+    welcome_points: int,
 ):
     serial = str(uuid.uuid4())
     socio_payload = {
@@ -449,7 +485,6 @@ def _create_socio_full(
         raise HTTPException(500, "No se pudo crear el socio")
     socio = inserted[0]
 
-    # Create pass record
     pass_payload = {
         "tenant_id": tenant_id,
         "socio_id": socio["id"],
@@ -463,7 +498,6 @@ def _create_socio_full(
     except Exception as e:
         logger.warning(f"pass insert failed: {e}")
 
-    # Welcome transaction
     if welcome_points > 0:
         try:
             sb.table("transacciones_puntos").insert(
@@ -478,7 +512,6 @@ def _create_socio_full(
         except Exception as e:
             logger.warning(f"welcome tx failed: {e}")
 
-    # Best-effort Railway call to materialize the .pkpass
     if RAILWAY_API_URL:
         try:
             with httpx.Client(timeout=5.0) as client:
