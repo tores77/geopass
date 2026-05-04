@@ -54,6 +54,10 @@ SUPABASE_ANON_KEY = os.environ["SUPABASE_ANON_KEY"]
 SUPABASE_SERVICE_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 RAILWAY_API_URL = os.environ.get("RAILWAY_API_URL", "")
 
+# Announce the Railway URL at import time so it's visible in the very first
+# lines of the production log.
+print(f"[BOOT] RAILWAY_API_URL = {RAILWAY_API_URL or 'NOT SET'}", flush=True)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("geopass")
 
@@ -171,6 +175,62 @@ def root():
 @api.get("/health")
 def health():
     return {"status": "ok", "supabase": bool(SUPABASE_URL)}
+
+
+@api.get("/test-railway")
+async def test_railway():
+    """Diagnostics: prove the backend can reach Railway and report timings.
+
+    Returns the Railway URL we are using plus the status and latency of a
+    live GET /health and POST /passes/create round-trip.
+    """
+    url = RAILWAY_API_URL or ""
+    out = {"railway_url": url or "NOT SET", "checks": {}}
+
+    async def _probe(method: str, path: str, json_body=None):
+        started = datetime.now(timezone.utc)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                if method == "GET":
+                    r = await client.get(f"{url}{path}")
+                else:
+                    r = await client.post(f"{url}{path}", json=json_body)
+            elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+            return {
+                "ok": r.status_code < 400,
+                "status": r.status_code,
+                "elapsed_ms": elapsed_ms,
+                "content_type": r.headers.get("content-type"),
+                "bytes": len(r.content),
+            }
+        except Exception as e:
+            elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+            return {
+                "ok": False,
+                "status": None,
+                "elapsed_ms": elapsed_ms,
+                "error_type": type(e).__name__,
+                "error": str(e)[:300],
+            }
+
+    if not url:
+        return out
+
+    out["checks"]["GET /health"] = await _probe("GET", "/health")
+    out["checks"]["POST /passes/create (smoke)"] = await _probe(
+        "POST",
+        "/passes/create",
+        json_body={
+            "tenant_id": "diagnostic",
+            "socio_id": "diagnostic",
+            "serial_number": "diagnostic-" + uuid.uuid4().hex[:8],
+            "nombre": "Diagnostic",
+            "puntos": 0,
+            "nivel": "basico",
+            "nombre_marca": "Diagnostic",
+        },
+    )
+    return out
 
 
 # ───────────────────────────── Auth ─────────────────────────────
@@ -605,10 +665,12 @@ def _generate_pkpass_bytes(socio: dict, tenant: dict) -> Optional[bytes]:
         return None
     payload = _build_pass_payload(socio, tenant)
     serial = payload.get("serial_number")
+    target_url = f"{RAILWAY_API_URL}/passes/create"
+    logger.info("pkpass → POST %s serial=%s", target_url, serial)
     started = datetime.now(timezone.utc)
     try:
         with httpx.Client(timeout=20.0) as client:
-            r = client.post(f"{RAILWAY_API_URL}/passes/create", json=payload)
+            r = client.post(target_url, json=payload)
         elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         ctype = r.headers.get("content-type", "").lower()
         if r.status_code >= 400:
