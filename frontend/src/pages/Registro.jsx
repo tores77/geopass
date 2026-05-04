@@ -14,7 +14,7 @@ function base64ToBuffer(b64) {
 }
 
 /* Official Apple "Add to Apple Wallet" badge — inline SVG. */
-function AddToAppleWalletBadge({ label = "Add to Apple Wallet" }) {
+function AddToAppleWalletBadge() {
   return (
     <span className="inline-flex items-center gap-3 h-full">
       <svg
@@ -30,7 +30,7 @@ function AddToAppleWalletBadge({ label = "Add to Apple Wallet" }) {
         <span className="text-[0.6rem] uppercase tracking-[0.18em] opacity-80">
           Añadir a
         </span>
-        <span className="text-[1.05rem] font-semibold">{label.replace("Add to ", "")}</span>
+        <span className="text-[1.05rem] font-semibold">Apple Wallet</span>
       </span>
     </span>
   );
@@ -207,7 +207,7 @@ export default function Registro() {
                   data-testid="add-to-wallet"
                   aria-label="Añadir a Apple Wallet"
                 >
-                  <AddToAppleWalletBadge label="Añadir a Apple Wallet" />
+                  <AddToAppleWalletBadge />
                 </button>
 
                 <p className="text-[0.7rem] text-[var(--gp-muted)] mt-3">
