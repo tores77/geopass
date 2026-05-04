@@ -1,0 +1,46 @@
+{
+  "summary": "Iteration 3 — Phase 1.5 Apple Wallet integration (Railway LIVE) end-to-end verified. Backend pytest suite 26/26 PASS, including the 3 new wallet tests (public registro returns new shape with pkpass_base64 decoding to valid ZIP-magic PK\\x03\\x04 bytes + pkpass_url /api/passes/{serial}/download; GET /api/passes/{serial}/download returns 200 with Content-Type application/vnd.apple.pkpass + attachment Content-Disposition + valid ZIP magic; unknown serial returns 404). Admin-created socios regression: POST /api/socios still returns plain socio object with NO pkpass_base64 / NO success flag. Frontend: /registro/umania-demo loads, submit flows to success screen (¡Bienvenido/a!, 500 puntos, nombre, email, serial visible), Añadir a Apple Wallet badge renders (black bg, Apple SVG logo + text), clicking the badge triggers a real browser download of 'geopass-<serial>.pkpass' (filename verified) whose bytes start with 504b0304 (ZIP magic) — confirmed via Playwright page.expect_download + download.path() byte-read. Bad slug shows 'Tarjeta no disponible'. Full authenticated regression OK: login → dashboard → /socios → /notificaciones → /aliados → /configuracion (QR renders + Descargar/Copiar/Abrir buttons). Railway payload built by backend matches spec (tenant_id, socio_id, serial_number, nombre, puntos=500, nivel='basico', nombre_marca; lat/lng correctly omitted because tenants table has no columns). FCM still MOCKED as expected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "all authenticated endpoints", "issue": "Per-request Supabase client creation still ~9-11s latency (known from iteration_2, not regressed). Registro now ~1-2s slower due to Railway pkpass call, still acceptable (<15s)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Apple Wallet badge", "issues": ["Visual text reads 'AÑADIR A' (small caps) above 'Añadir a Apple Wallet' (big) — this is the intended Apple Wallet badge style; render is correct, but visually the copy duplicates the phrase 'Añadir a'. Consider changing the small caption to 'AÑADIR A' only (without the trailing 'a') or using just the icon + main label. Not a blocker."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_geopass_api.py",
+    "/app/backend/tests/test_concurrency.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Polish the Apple Wallet badge copy so 'Añadir a' is not rendered twice.",
+    "(Carried from iteration_2, optional perf) Use a shared supabase client with http2=False to drop per-request latency from 9-11s to <1s.",
+    "(Nice-to-have) Add lat/lng columns to tenants table so Railway can enable geo-push on pkpass — currently correctly omitted but the Phase 1.5 spec anticipates them."
+  ],
+  "critical_code_review_comments": [
+    "public_registro correctly returns the new flat shape (success, socio_id, socio_nombre, socio_email, socio_serial, puntos, pkpass_base64, pkpass_url, tenant) — verified.",
+    "_build_pass_payload correctly skips lat/lng/radio_metros when tenant dict has no lat/lng keys — verified against current tenants schema.",
+    "_create_socio_full with fetch_pkpass=False is still used by the admin POST /api/socios path (line 308-309), so the admin response shape remains unchanged — regression confirmed.",
+    "GET /api/passes/{serial}/download is a PUBLIC endpoint (no auth required) — this is intentional because pkpass links live outside the authenticated app, but worth confirming this matches product expectations (anyone with a serial can re-download). Low risk today since serial_number is a UUID.",
+    "_generate_pkpass_bytes swallows any Railway non-success response and returns None → download endpoint then surfaces a 503 ('servicio no disponible'). Good failure mode.",
+    "Frontend base64ToBuffer → Blob → anchor-click path verified end-to-end; fallback to `${REACT_APP_BACKEND_URL}${pkpass_url}` (line not exercised because base64 was present) is coded defensively.",
+    "No data-testid still missing on Layout's 'Cerrar sesión' and Dashboard quick-action buttons (carried from iteration_2)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_geopass_api.py",
+    "/app/backend/tests/conftest.py"
+  ],
+  "success_rate": {"backend": "100% (26/26 pytest)", "frontend": "100% (wallet download + regression nav on login/dashboard/socios/notificaciones/aliados/configuracion)"},
+  "test_credentials": "pere@umanialabs.com / 123456Ab!! (Supabase Auth) — works, rol superadmin, tenant umania-demo.",
+  "seed_data_creation": "A few more TEST_reg_* and TEST_ui_* socios were created via Railway pkpass flow during tests. Safe to leave — all prefixed with TEST_ for easy cleanup.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 1.5 (Railway pkpass integration) is fully verified both backend and frontend. New test fixtures and 3 new cases are in /app/backend/tests/test_geopass_api.py (TestPublic::test_registro_success_with_pkpass, test_passes_download_ok, test_passes_download_unknown_serial_404) and TestAdminSocioRegression::test_admin_create_returns_plain_shape. A session-scoped `registro_result` fixture in conftest.py does ONE public registration and shares it across multiple tests to avoid hammering Railway. FCM still MOCKED, Railway is LIVE. No regressions found. Only carry-over perf item is the per-request Supabase client latency noted in iteration_2."
+}

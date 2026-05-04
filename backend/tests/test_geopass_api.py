@@ -196,24 +196,49 @@ class TestPublic:
         r = api_client.get(f"{base_url}/api/public/tenants/no-such-slug")
         assert r.status_code == 404
 
-    def test_registro_success(self, api_client, base_url):
-        email = f"TEST_reg_{uuid.uuid4().hex[:8]}@example.com"
-        r = api_client.post(
-            f"{base_url}/api/public/registro/umania-demo",
-            json={"nombre": "TEST Publico", "email": email, "telefono": "+34611111111"},
-        )
-        assert r.status_code == 200, r.text
-        d = r.json()
-        assert d["ok"] is True
-        assert d["socio"]["email"] == email
-        assert d["socio"]["puntos"] == 500
+    def test_registro_success_with_pkpass(self, api_client, base_url, registro_result):
+        """New response shape must include pkpass_base64 (valid ZIP magic) + pkpass_url."""
+        d = registro_result
+        # New flat shape
+        assert d["success"] is True
+        assert d["socio_email"].startswith("TEST_reg_")
+        assert d["puntos"] == 500
+        assert d["socio_serial"]
         assert d["tenant"]["slug"] == "umania-demo"
+
+        # pkpass_url shape
+        assert d["pkpass_url"] == f"/api/passes/{d['socio_serial']}/download"
+
+        # pkpass_base64 decodes to ZIP-magic bytes
+        import base64 as b64
+        assert d["pkpass_base64"], "pkpass_base64 should be present"
+        raw = b64.b64decode(d["pkpass_base64"])
+        assert len(raw) > 100, f"pkpass bytes too small: {len(raw)}"
+        assert raw[:4] == b"PK\x03\x04", f"expected ZIP magic, got {raw[:4].hex()}"
+
+    def test_passes_download_ok(self, api_client, base_url, registro_result):
+        """GET /api/passes/{serial}/download returns pkpass binary with correct headers."""
+        serial = registro_result["socio_serial"]
+        r = api_client.get(f"{base_url}/api/passes/{serial}/download")
+        assert r.status_code == 200, r.text
+        ctype = r.headers.get("Content-Type", "")
+        assert "application/vnd.apple.pkpass" in ctype, ctype
+        cd = r.headers.get("Content-Disposition", "")
+        assert "attachment" in cd and f"geopass-{serial}.pkpass" in cd, cd
+        body = r.content
+        assert body[:4] == b"PK\x03\x04", f"expected ZIP magic, got {body[:4].hex()}"
+        assert len(body) > 100
+
+    def test_passes_download_unknown_serial_404(self, api_client, base_url):
+        r = api_client.get(f"{base_url}/api/passes/no-such-serial/download")
+        assert r.status_code == 404
 
     def test_registro_duplicate(self, api_client, base_url):
         email = f"TEST_dup_{uuid.uuid4().hex[:8]}@example.com"
         payload = {"nombre": "TEST Dup", "email": email}
         r1 = api_client.post(f"{base_url}/api/public/registro/umania-demo", json=payload)
         assert r1.status_code == 200
+        assert r1.json().get("success") is True
         r2 = api_client.post(f"{base_url}/api/public/registro/umania-demo", json=payload)
         assert r2.status_code == 409
 
@@ -223,3 +248,22 @@ class TestPublic:
             json={"nombre": "x", "email": f"TEST_bad_{uuid.uuid4().hex[:6]}@example.com"},
         )
         assert r.status_code == 404
+
+
+# ───── Admin-created socio regression (no pkpass in response) ─────
+class TestAdminSocioRegression:
+    def test_admin_create_returns_plain_shape(self, api_client, base_url, auth_headers):
+        email = f"TEST_adm_{uuid.uuid4().hex[:8]}@example.com"
+        r = api_client.post(
+            f"{base_url}/api/socios",
+            headers=auth_headers,
+            json={"nombre": "TEST Admin Socio", "email": email},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # Plain socio object (no pkpass_base64, no success flag)
+        assert "pkpass_base64" not in body
+        assert "success" not in body
+        assert body["email"] == email
+        assert body.get("wallet_pass_serial")
+        assert "id" in body

@@ -50,3 +50,21 @@ def api_client():
     s = requests.Session()
     s.headers.update({"Content-Type": "application/json"})
     return s
+
+
+@pytest.fixture(scope="session")
+def registro_result(api_client, base_url):
+    """Do a ONE-time public registration and share the response across tests.
+
+    Railway pkpass creation adds ~1-2s + Supabase ~10s, so doing this once
+    saves a lot of time vs per-test registrations.
+    """
+    import uuid as _uuid
+    email = f"TEST_reg_{_uuid.uuid4().hex[:8]}@example.com"
+    r = api_client.post(
+        f"{base_url}/api/public/registro/umania-demo",
+        json={"nombre": "TEST Publico", "email": email, "telefono": "+34611111111"},
+        timeout=30,
+    )
+    assert r.status_code == 200, f"Registro failed: {r.status_code} {r.text}"
+    return r.json()

@@ -10,7 +10,7 @@ safe to share across concurrent FastAPI requests (H2 stream state races
 produce RemoteProtocolError). We therefore create a fresh Supabase Client
 per request via FastAPI dependencies.
 """
-from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 import os
 import uuid
+import base64
 import logging
 import httpx
 
@@ -304,7 +305,10 @@ def create_socio(
     user: CurrentUser = Depends(get_current_user),
     sb: Client = Depends(sb_dep),
 ):
-    return _create_socio_full(sb, user.tenant_id, body.nombre, body.email, body.telefono, welcome_points=0)
+    socio, _ = _create_socio_full(
+        sb, user.tenant, body.nombre, body.email, body.telefono, welcome_points=0, fetch_pkpass=False
+    )
+    return socio
 
 
 @api.post("/socios/{socio_id}/puntos")
@@ -466,19 +470,131 @@ def public_registro(slug: str, body: RegistroPublico, sb: Client = Depends(sb_de
     if dup:
         raise HTTPException(409, "Este email ya está registrado en esta tarjeta")
 
-    socio = _create_socio_full(sb, tid, body.nombre, body.email, body.telefono, welcome_points=500)
-    return {"ok": True, "socio": socio, "tenant": tenant}
+    socio, pkpass_b64 = _create_socio_full(
+        sb, tenant, body.nombre, body.email, body.telefono, welcome_points=500, fetch_pkpass=True
+    )
+    return {
+        "success": True,
+        "socio_id": socio["id"],
+        "socio_nombre": socio["nombre"],
+        "socio_email": socio["email"],
+        "socio_serial": socio["wallet_pass_serial"],
+        "puntos": socio["puntos"],
+        "pkpass_base64": pkpass_b64,
+        "pkpass_url": f"/api/passes/{socio['wallet_pass_serial']}/download",
+        "tenant": tenant,
+    }
+
+
+# ───────────────────────────── Wallet pass download ─────────────────────────────
+@api.get("/passes/{serial_number}/download")
+def download_pass(serial_number: str, sb: Client = Depends(sb_dep)):
+    """Re-generate the .pkpass from Railway using stored socio data."""
+    pass_rows = (
+        sb.table("passes")
+        .select("*")
+        .eq("serial_number", serial_number)
+        .eq("activo", True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not pass_rows:
+        raise HTTPException(404, "Pass no encontrado")
+    p = pass_rows[0]
+
+    socio_rows = (
+        sb.table("socios")
+        .select("*")
+        .eq("id", p["socio_id"])
+        .eq("tenant_id", p["tenant_id"])
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not socio_rows:
+        raise HTTPException(404, "Socio no encontrado")
+    socio = socio_rows[0]
+
+    tenant_rows = (
+        sb.table("tenants").select("*").eq("id", p["tenant_id"]).limit(1).execute().data
+    )
+    if not tenant_rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    tenant = tenant_rows[0]
+
+    pkpass_bytes = _generate_pkpass_bytes(socio, tenant)
+    if not pkpass_bytes:
+        raise HTTPException(
+            503,
+            "El servicio de generación de tarjetas no está disponible. Inténtalo más tarde.",
+        )
+    return Response(
+        content=pkpass_bytes,
+        media_type="application/vnd.apple.pkpass",
+        headers={
+            "Content-Disposition": f'attachment; filename="geopass-{serial_number}.pkpass"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ───────────────────────────── Helpers ─────────────────────────────
+def _build_pass_payload(socio: dict, tenant: dict) -> dict:
+    payload = {
+        "tenant_id": tenant["id"],
+        "socio_id": socio["id"],
+        "serial_number": socio["wallet_pass_serial"],
+        "nombre": socio["nombre"],
+        "puntos": socio.get("puntos", 0),
+        "nivel": socio.get("nivel") or "basico",
+        "nombre_marca": tenant.get("nombre_marca"),
+    }
+    # Optional geopush coordinates — only included if the tenant has them.
+    if tenant.get("lat") is not None and tenant.get("lng") is not None:
+        payload["lat"] = tenant["lat"]
+        payload["lng"] = tenant["lng"]
+        payload["radio_metros"] = 150
+    return payload
+
+
+def _generate_pkpass_bytes(socio: dict, tenant: dict) -> Optional[bytes]:
+    """Call Railway POST /passes/create and return the .pkpass binary bytes.
+
+    Returns None if Railway is unreachable or responds with an error (graceful
+    degradation — caller decides how to surface this).
+    """
+    if not RAILWAY_API_URL:
+        return None
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            r = client.post(
+                f"{RAILWAY_API_URL}/passes/create",
+                json=_build_pass_payload(socio, tenant),
+            )
+        if r.status_code >= 400:
+            logger.info(f"Railway /passes/create responded {r.status_code}")
+            return None
+        ctype = r.headers.get("content-type", "").lower()
+        if "pkpass" not in ctype and "zip" not in ctype and "octet-stream" not in ctype:
+            logger.info(f"Railway returned unexpected content-type: {ctype}")
+            return None
+        return r.content
+    except Exception as e:
+        logger.info(f"Railway create silenced: {e}")
+        return None
+
+
 def _create_socio_full(
     sb: Client,
-    tenant_id: str,
+    tenant: dict,
     nombre: str,
     email: str,
     telefono: Optional[str],
     welcome_points: int,
+    fetch_pkpass: bool = False,
 ):
+    tenant_id = tenant["id"]
     serial = str(uuid.uuid4())
     socio_payload = {
         "tenant_id": tenant_id,
@@ -521,23 +637,25 @@ def _create_socio_full(
         except Exception as e:
             logger.warning(f"welcome tx failed: {e}")
 
-    if RAILWAY_API_URL:
-        try:
-            with httpx.Client(timeout=5.0) as client:
-                client.post(
-                    f"{RAILWAY_API_URL}/passes/create",
-                    json={
-                        "tenant_id": tenant_id,
-                        "socio_id": socio["id"],
-                        "serial_number": serial,
-                        "nombre": nombre,
-                        "email": email,
-                    },
-                )
-        except Exception as e:
-            logger.info(f"Railway create silenced: {e}")
+    pkpass_b64: Optional[str] = None
+    if fetch_pkpass:
+        pkpass_bytes = _generate_pkpass_bytes(socio, tenant)
+        if pkpass_bytes:
+            pkpass_b64 = base64.b64encode(pkpass_bytes).decode("ascii")
+    else:
+        # Fire-and-forget best-effort: still warm up the Railway service so
+        # the first GET /passes/:serial/download is fast.
+        if RAILWAY_API_URL:
+            try:
+                with httpx.Client(timeout=5.0) as client:
+                    client.post(
+                        f"{RAILWAY_API_URL}/passes/create",
+                        json=_build_pass_payload(socio, tenant),
+                    )
+            except Exception as e:
+                logger.info(f"Railway warmup silenced: {e}")
 
-    return socio
+    return socio, pkpass_b64
 
 
 # ───────────────────────────── Wire up ─────────────────────────────

@@ -1,7 +1,40 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { publicApi } from "../lib/api";
-import { CheckCircle2, AlertTriangle, Smartphone } from "lucide-react";
+import { CheckCircle2, AlertTriangle } from "lucide-react";
+
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+
+/* Convert base64 -> Uint8Array for a client-side Blob download. */
+function base64ToBuffer(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+/* Official Apple "Add to Apple Wallet" badge — inline SVG. */
+function AddToAppleWalletBadge({ label = "Add to Apple Wallet" }) {
+  return (
+    <span className="inline-flex items-center gap-3 h-full">
+      <svg
+        width="28"
+        height="28"
+        viewBox="0 0 24 24"
+        fill="white"
+        aria-hidden="true"
+      >
+        <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z" />
+      </svg>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-[0.6rem] uppercase tracking-[0.18em] opacity-80">
+          Añadir a
+        </span>
+        <span className="text-[1.05rem] font-semibold">{label.replace("Add to ", "")}</span>
+      </span>
+    </span>
+  );
+}
 
 export default function Registro() {
   const { tenant_slug } = useParams();
@@ -45,6 +78,28 @@ export default function Registro() {
     }
   };
 
+  const handleAddToWallet = () => {
+    if (!success) return;
+    if (success.pkpass_base64) {
+      // In-memory direct download (no second network hop).
+      const blob = new Blob([base64ToBuffer(success.pkpass_base64)], {
+        type: "application/vnd.apple.pkpass",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `geopass-${success.socio_serial || "pass"}.pkpass`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } else if (success.pkpass_url) {
+      // Fallback: backend endpoint re-generates via Railway.
+      const absolute = `${BACKEND_URL}${success.pkpass_url}`;
+      window.location.href = absolute;
+    }
+  };
+
   if (loadingTenant) {
     return (
       <div className="min-h-screen flex items-center justify-center text-[var(--gp-muted)]">
@@ -69,10 +124,12 @@ export default function Registro() {
   const secondary = tenant.color_secundario || "#0ea5e9";
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-5"
-         style={{
-           backgroundImage: `radial-gradient(circle at 20% 20%, ${primary}22, transparent 40%), radial-gradient(circle at 80% 80%, ${secondary}22, transparent 40%)`,
-         }}>
+    <div
+      className="min-h-screen flex items-center justify-center p-5"
+      style={{
+        backgroundImage: `radial-gradient(circle at 20% 20%, ${primary}22, transparent 40%), radial-gradient(circle at 80% 80%, ${secondary}22, transparent 40%)`,
+      }}
+    >
       <div className="w-full max-w-md gp-fade-up">
         <div
           className="gp-card-elevated rounded-2xl overflow-hidden"
@@ -106,7 +163,10 @@ export default function Registro() {
           {/* Body */}
           <div className="p-6">
             {success ? (
-              <div className="flex flex-col items-center text-center" data-testid="registro-success">
+              <div
+                className="flex flex-col items-center text-center"
+                data-testid="registro-success"
+              >
                 <div
                   className="w-14 h-14 rounded-full flex items-center justify-center mb-3"
                   style={{ background: `${primary}22`, color: primary }}
@@ -115,35 +175,45 @@ export default function Registro() {
                 </div>
                 <h2 className="text-2xl gp-display mb-1">¡Bienvenido/a!</h2>
                 <p className="text-sm text-[var(--gp-muted)]">
-                  Te hemos sumado <strong className="text-[var(--gp-text)]">500 puntos</strong>{" "}
+                  Te hemos sumado{" "}
+                  <strong className="text-[var(--gp-text)]">
+                    {success.puntos ?? 500} puntos
+                  </strong>{" "}
                   de bienvenida.
                 </p>
 
                 <div
                   className="w-full mt-6 p-4 rounded-xl text-left"
-                  style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${primary}33` }}
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    border: `1px solid ${primary}33`,
+                  }}
                 >
                   <div className="text-xs uppercase tracking-wider text-[var(--gp-muted)] mb-1">
                     Tu tarjeta digital
                   </div>
-                  <div className="font-medium">{success.socio.nombre}</div>
-                  <div className="text-xs text-[var(--gp-muted)]">{success.socio.email}</div>
+                  <div className="font-medium">{success.socio_nombre}</div>
+                  <div className="text-xs text-[var(--gp-muted)]">{success.socio_email}</div>
                   <div className="text-xs text-[var(--gp-muted)] mt-2 break-all">
-                    Serial: {success.socio.wallet_pass_serial}
+                    Serial: {success.socio_serial}
                   </div>
                 </div>
 
+                {/* Apple Wallet badge — always shown; uses base64 if present,
+                    otherwise falls back to /api/passes/:serial/download */}
                 <button
-                  className="mt-5 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-full text-[var(--gp-bg)] font-bold"
-                  style={{ background: `linear-gradient(135deg, ${primary}, ${secondary})` }}
+                  onClick={handleAddToWallet}
+                  className="mt-5 w-full h-14 rounded-xl bg-black text-white flex items-center justify-center gap-2 font-medium transition-transform hover:-translate-y-0.5 active:translate-y-0 shadow-[0_8px_24px_rgba(0,0,0,0.35)] border border-white/10"
                   data-testid="add-to-wallet"
-                  onClick={() => alert("Tu .pkpass se enviará por email cuando esté listo.")}
+                  aria-label="Añadir a Apple Wallet"
                 >
-                  <Smartphone size={16} />
-                  Añadir a Wallet
+                  <AddToAppleWalletBadge label="Añadir a Apple Wallet" />
                 </button>
+
                 <p className="text-[0.7rem] text-[var(--gp-muted)] mt-3">
-                  Tu tarjeta estará lista en breve. Te avisaremos por email.
+                  {success.pkpass_base64
+                    ? "Tu tarjeta está lista. Abre el archivo para añadirla a tu Wallet."
+                    : "Si la tarjeta no se descarga, vuelve a pulsar el botón en unos segundos."}
                 </p>
               </div>
             ) : (
@@ -154,7 +224,9 @@ export default function Registro() {
                 </p>
 
                 <div>
-                  <label className="text-xs uppercase tracking-wider text-[var(--gp-muted)]">Nombre completo</label>
+                  <label className="text-xs uppercase tracking-wider text-[var(--gp-muted)]">
+                    Nombre completo
+                  </label>
                   <input
                     value={nombre}
                     onChange={(e) => setNombre(e.target.value)}
@@ -164,7 +236,9 @@ export default function Registro() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs uppercase tracking-wider text-[var(--gp-muted)]">Email</label>
+                  <label className="text-xs uppercase tracking-wider text-[var(--gp-muted)]">
+                    Email
+                  </label>
                   <input
                     type="email"
                     value={email}
@@ -187,7 +261,10 @@ export default function Registro() {
                 </div>
 
                 {error && (
-                  <div className="text-xs text-[var(--gp-error)]" data-testid="registro-error">
+                  <div
+                    className="text-xs text-[var(--gp-error)]"
+                    data-testid="registro-error"
+                  >
                     {error}
                   </div>
                 )}
@@ -196,7 +273,9 @@ export default function Registro() {
                   type="submit"
                   disabled={busy}
                   className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-full text-[var(--gp-bg)] font-bold transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-                  style={{ background: `linear-gradient(135deg, ${primary}, ${secondary})` }}
+                  style={{
+                    background: `linear-gradient(135deg, ${primary}, ${secondary})`,
+                  }}
                   data-testid="registro-submit"
                 >
                   {busy ? "Creando tu tarjeta..." : "Crear mi tarjeta de socio"}
@@ -209,9 +288,8 @@ export default function Registro() {
           </div>
         </div>
         <div className="text-center mt-5 text-xs text-[var(--gp-muted)]">
-          Powered by{" "}
-          <span className="gp-gradient-text font-semibold">GeoPass™</span>{" "}
-          · Umania Labs
+          Powered by <span className="gp-gradient-text font-semibold">GeoPass™</span> · Umania
+          Labs
         </div>
       </div>
     </div>
