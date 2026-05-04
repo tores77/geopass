@@ -23,6 +23,7 @@ import os
 import json as _json
 import uuid
 import base64
+import asyncio
 import logging
 import httpx
 
@@ -725,3 +726,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ───────────────────────────── Railway keep-alive ─────────────────────────────
+KEEPALIVE_INTERVAL_SECONDS = 240  # 4 minutes — Railway free tier idles ~5min
+
+
+async def keepalive_railway() -> None:
+    """Ping Railway /health every 4 minutes to prevent cold starts."""
+    while True:
+        await asyncio.sleep(KEEPALIVE_INTERVAL_SECONDS)
+        if not RAILWAY_API_URL:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{RAILWAY_API_URL}/health")
+            logger.info("keepalive railway status=%d", r.status_code)
+        except Exception as e:
+            logger.info("keepalive railway failed (silenced): %s", e)
+
+
+@app.on_event("startup")
+async def start_keepalive() -> None:
+    if RAILWAY_API_URL:
+        asyncio.create_task(keepalive_railway())
+        logger.info("keepalive scheduled every %ds for %s", KEEPALIVE_INTERVAL_SECONDS, RAILWAY_API_URL)
