@@ -12,17 +12,38 @@ per request via FastAPI dependencies.
 """
 from fastapi import FastAPI, APIRouter, HTTPException, Header, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Any, Optional
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from supabase import create_client, Client
 import os
+import json as _json
 import uuid
 import base64
 import logging
 import httpx
+
+
+class UTF8JSONResponse(JSONResponse):
+    """JSON responses with explicit UTF-8 charset + non-escaped unicode.
+
+    Fixes garbled ñ/tildes on iOS and other clients that default to Latin-1
+    when no charset is present in the Content-Type header.
+    """
+
+    media_type = "application/json; charset=utf-8"
+
+    def render(self, content: Any) -> bytes:
+        return _json.dumps(
+            content,
+            ensure_ascii=False,
+            allow_nan=False,
+            indent=None,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -35,8 +56,17 @@ RAILWAY_API_URL = os.environ.get("RAILWAY_API_URL", "")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("geopass")
 
-app = FastAPI(title="GeoPass API")
-api = APIRouter(prefix="/api")
+app = FastAPI(title="GeoPass API", default_response_class=UTF8JSONResponse)
+api = APIRouter(prefix="/api", default_response_class=UTF8JSONResponse)
+
+
+@app.exception_handler(HTTPException)
+def _http_exception_handler(_request, exc: HTTPException):
+    return UTF8JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
 
 
 # ───────────────────────────── DI: Supabase clients ─────────────────────────────
@@ -525,9 +555,13 @@ def download_pass(serial_number: str, sb: Client = Depends(sb_dep)):
 
     pkpass_bytes = _generate_pkpass_bytes(socio, tenant)
     if not pkpass_bytes:
+        # Single retry to ride out Railway cold-starts / intermittent 5xx.
+        logger.warning("pkpass DOWNLOAD retry serial=%s", serial_number)
+        pkpass_bytes = _generate_pkpass_bytes(socio, tenant)
+    if not pkpass_bytes:
         raise HTTPException(
             503,
-            "El servicio de generación de tarjetas no está disponible. Inténtalo más tarde.",
+            "El servicio de generación de tarjetas está tardando en responder. Vuelve a intentarlo en unos segundos.",
         )
     return Response(
         content=pkpass_bytes,
@@ -561,27 +595,50 @@ def _build_pass_payload(socio: dict, tenant: dict) -> dict:
 def _generate_pkpass_bytes(socio: dict, tenant: dict) -> Optional[bytes]:
     """Call Railway POST /passes/create and return the .pkpass binary bytes.
 
-    Returns None if Railway is unreachable or responds with an error (graceful
-    degradation — caller decides how to surface this).
+    Returns None if Railway is unreachable or responds with an error. All
+    failure modes are logged at WARNING with the Railway status, elapsed
+    time, content-type and up-to 500-char body snippet for diagnosis.
     """
     if not RAILWAY_API_URL:
+        logger.warning("pkpass: RAILWAY_API_URL is empty — cannot generate")
         return None
+    payload = _build_pass_payload(socio, tenant)
+    serial = payload.get("serial_number")
+    started = datetime.now(timezone.utc)
     try:
-        with httpx.Client(timeout=15.0) as client:
-            r = client.post(
-                f"{RAILWAY_API_URL}/passes/create",
-                json=_build_pass_payload(socio, tenant),
-            )
-        if r.status_code >= 400:
-            logger.info(f"Railway /passes/create responded {r.status_code}")
-            return None
+        with httpx.Client(timeout=20.0) as client:
+            r = client.post(f"{RAILWAY_API_URL}/passes/create", json=payload)
+        elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
         ctype = r.headers.get("content-type", "").lower()
-        if "pkpass" not in ctype and "zip" not in ctype and "octet-stream" not in ctype:
-            logger.info(f"Railway returned unexpected content-type: {ctype}")
+        if r.status_code >= 400:
+            body_snippet = r.text[:500] if r.text else "<empty>"
+            logger.warning(
+                "pkpass FAILED serial=%s status=%d ctype=%s elapsed=%dms body=%s",
+                serial, r.status_code, ctype, elapsed_ms, body_snippet,
+            )
             return None
+        if not ("pkpass" in ctype or "zip" in ctype or "octet-stream" in ctype):
+            body_snippet = r.text[:500] if r.text else "<empty>"
+            logger.warning(
+                "pkpass UNEXPECTED-CT serial=%s status=%d ctype=%s elapsed=%dms body=%s",
+                serial, r.status_code, ctype, elapsed_ms, body_snippet,
+            )
+            return None
+        logger.info(
+            "pkpass OK serial=%s status=%d bytes=%d elapsed=%dms",
+            serial, r.status_code, len(r.content), elapsed_ms,
+        )
         return r.content
+    except httpx.TimeoutException as e:
+        elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        logger.warning("pkpass TIMEOUT serial=%s elapsed=%dms err=%s", serial, elapsed_ms, e)
+        return None
     except Exception as e:
-        logger.info(f"Railway create silenced: {e}")
+        elapsed_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        logger.warning(
+            "pkpass EXCEPTION serial=%s elapsed=%dms err=%s: %s",
+            serial, elapsed_ms, type(e).__name__, e,
+        )
         return None
 
 
