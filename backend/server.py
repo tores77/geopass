@@ -95,6 +95,7 @@ class CurrentUser(BaseModel):
 
 def get_current_user(
     authorization: Optional[str] = Header(None),
+    x_impersonate_tenant_id: Optional[str] = Header(None),
     sb: Client = Depends(sb_dep),
     anon: Client = Depends(anon_dep),
 ) -> CurrentUser:
@@ -125,8 +126,15 @@ def get_current_user(
         raise HTTPException(403, "Usuario no autorizado para este panel")
     admin = admin_rows[0]
 
+    effective_tenant_id = admin["tenant_id"]
+    # Superadmin impersonation: only honour the override when the actual
+    # admin record has rol='superadmin'. Anyone else trying to send the
+    # header is silently ignored.
+    if x_impersonate_tenant_id and admin.get("rol") == "superadmin":
+        effective_tenant_id = x_impersonate_tenant_id
+
     tenant_rows = (
-        sb.table("tenants").select("*").eq("id", admin["tenant_id"]).limit(1).execute().data
+        sb.table("tenants").select("*").eq("id", effective_tenant_id).limit(1).execute().data
     )
     if not tenant_rows:
         raise HTTPException(403, "Tenant no encontrado")
@@ -136,9 +144,21 @@ def get_current_user(
         email=user.email,
         nombre=admin["nombre"],
         rol=admin["rol"],
-        tenant_id=admin["tenant_id"],
+        tenant_id=effective_tenant_id,
         tenant=tenant_rows[0],
     )
+
+
+def superadmin_required(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Dependency that enforces rol == 'superadmin'.
+
+    NOTE: even when the user is impersonating another tenant, their *actual*
+    role is preserved on `CurrentUser.rol` because the impersonation override
+    only changes `tenant_id` / `tenant`.
+    """
+    if user.rol != "superadmin":
+        raise HTTPException(403, "Acceso restringido a superadmin")
+    return user
 
 
 # ───────────────────────────── Pydantic models ─────────────────────────────
@@ -158,6 +178,31 @@ class NotificationSend(BaseModel):
     mensaje: str = Field(max_length=150)
     canal: str = Field(default="ambos")  # wallet | fcm | ambos
     socio_id: Optional[str] = None  # None = broadcast to all
+
+
+class TenantCreate(BaseModel):
+    nombre_marca: str
+    slug: str
+    plan: str = "basic"
+    color_primario: Optional[str] = "#00E5A0"
+    color_secundario: Optional[str] = "#0EA5E9"
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    logo_url: Optional[str] = None
+    admin_email: Optional[EmailStr] = None
+    admin_nombre: Optional[str] = None
+
+
+class TenantUpdate(BaseModel):
+    nombre_marca: Optional[str] = None
+    slug: Optional[str] = None
+    plan: Optional[str] = None
+    color_primario: Optional[str] = None
+    color_secundario: Optional[str] = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    logo_url: Optional[str] = None
+    activo: Optional[bool] = None
 
 
 class RegistroPublico(BaseModel):
@@ -632,6 +677,251 @@ def download_pass(serial_number: str, sb: Client = Depends(sb_dep)):
             "Cache-Control": "no-store",
         },
     )
+
+
+# ───────────────────────────── Superadmin (Umania Labs) ─────────────────────────────
+ALLOWED_PLANS = {"basic", "pro", "enterprise"}
+
+
+@api.get("/superadmin/stats")
+def superadmin_stats(
+    user: CurrentUser = Depends(superadmin_required), sb: Client = Depends(sb_dep)
+):
+    tenants_active = (
+        sb.table("tenants")
+        .select("id", count="exact")
+        .eq("activo", True)
+        .execute()
+        .count
+    ) or 0
+    socios_total = (
+        sb.table("socios")
+        .select("id", count="exact")
+        .eq("activo", True)
+        .execute()
+        .count
+    ) or 0
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    notif_month = (
+        sb.table("notificaciones")
+        .select("id", count="exact")
+        .gte("created_at", month_start)
+        .execute()
+        .count
+    ) or 0
+    return {
+        "tenants_activos": tenants_active,
+        "socios_total": socios_total,
+        "notificaciones_mes": notif_month,
+    }
+
+
+@api.get("/superadmin/tenants")
+def superadmin_list_tenants(
+    user: CurrentUser = Depends(superadmin_required), sb: Client = Depends(sb_dep)
+):
+    tenants = (
+        sb.table("tenants").select("*").order("created_at", desc=True).limit(500).execute().data
+    )
+    # Compute socio counts per tenant in two queries (count + group emulated)
+    socios = (
+        sb.table("socios")
+        .select("tenant_id")
+        .eq("activo", True)
+        .limit(20000)
+        .execute()
+        .data
+    )
+    counts: dict = {}
+    for s in socios:
+        counts[s["tenant_id"]] = counts.get(s["tenant_id"], 0) + 1
+    for t in tenants:
+        t["socios_count"] = counts.get(t["id"], 0)
+    return tenants
+
+
+@api.post("/superadmin/tenants", status_code=201)
+def superadmin_create_tenant(
+    body: TenantCreate,
+    user: CurrentUser = Depends(superadmin_required),
+    sb: Client = Depends(sb_dep),
+):
+    if body.plan not in ALLOWED_PLANS:
+        raise HTTPException(400, f"Plan inválido. Permitidos: {', '.join(sorted(ALLOWED_PLANS))}")
+
+    # Reject duplicate slug.
+    existing = (
+        sb.table("tenants").select("id").eq("slug", body.slug).limit(1).execute().data
+    )
+    if existing:
+        raise HTTPException(409, "Ya existe un tenant con ese slug")
+
+    payload = {
+        "nombre_marca": body.nombre_marca,
+        "slug": body.slug,
+        "plan": body.plan,
+        "color_primario": body.color_primario or "#00E5A0",
+        "color_secundario": body.color_secundario or "#0EA5E9",
+        "lat": body.lat,
+        "lng": body.lng,
+        "logo_url": body.logo_url,
+        "activo": True,
+    }
+    inserted = sb.table("tenants").insert(payload).execute().data
+    if not inserted:
+        raise HTTPException(500, "No se pudo crear el tenant")
+    tenant = inserted[0]
+
+    # Optional: also create a default usuarios_admin record so the new
+    # tenant has at least one admin contact pre-seeded.
+    if body.admin_email:
+        try:
+            sb.table("usuarios_admin").insert(
+                {
+                    "tenant_id": tenant["id"],
+                    "email": body.admin_email,
+                    "nombre": body.admin_nombre or body.nombre_marca,
+                    "rol": "admin",
+                    "activo": True,
+                }
+            ).execute()
+        except Exception as e:
+            logger.warning(f"admin seed failed: {e}")
+
+    return tenant
+
+
+@api.get("/superadmin/tenants/{tenant_id}")
+def superadmin_tenant_detail(
+    tenant_id: str,
+    user: CurrentUser = Depends(superadmin_required),
+    sb: Client = Depends(sb_dep),
+):
+    rows = sb.table("tenants").select("*").eq("id", tenant_id).limit(1).execute().data
+    if not rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    tenant = rows[0]
+
+    socios_count = (
+        sb.table("socios")
+        .select("id", count="exact")
+        .eq("tenant_id", tenant_id)
+        .eq("activo", True)
+        .execute()
+        .count
+    ) or 0
+    notif_count = (
+        sb.table("notificaciones")
+        .select("id", count="exact")
+        .eq("tenant_id", tenant_id)
+        .execute()
+        .count
+    ) or 0
+    tx_rows = (
+        sb.table("transacciones_puntos")
+        .select("puntos")
+        .eq("tenant_id", tenant_id)
+        .gt("puntos", 0)
+        .limit(10000)
+        .execute()
+        .data
+    )
+    puntos_total = sum(r["puntos"] for r in tx_rows)
+    recent_socios = (
+        sb.table("socios")
+        .select("id, nombre, email, puntos, nivel, created_at")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .limit(10)
+        .execute()
+        .data
+    )
+    admins = (
+        sb.table("usuarios_admin")
+        .select("id, email, nombre, rol, activo, created_at")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+
+    return {
+        "tenant": tenant,
+        "stats": {
+            "socios_count": socios_count,
+            "notificaciones_count": notif_count,
+            "puntos_emitidos": puntos_total,
+        },
+        "recent_socios": recent_socios,
+        "admins": admins,
+    }
+
+
+@api.patch("/superadmin/tenants/{tenant_id}")
+def superadmin_update_tenant(
+    tenant_id: str,
+    body: TenantUpdate,
+    user: CurrentUser = Depends(superadmin_required),
+    sb: Client = Depends(sb_dep),
+):
+    rows = sb.table("tenants").select("id").eq("id", tenant_id).limit(1).execute().data
+    if not rows:
+        raise HTTPException(404, "Tenant no encontrado")
+
+    update = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None or k == "activo"}
+    if "plan" in update and update["plan"] not in ALLOWED_PLANS:
+        raise HTTPException(400, f"Plan inválido. Permitidos: {', '.join(sorted(ALLOWED_PLANS))}")
+    if "slug" in update:
+        dup = (
+            sb.table("tenants")
+            .select("id")
+            .eq("slug", update["slug"])
+            .neq("id", tenant_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if dup:
+            raise HTTPException(409, "Ya existe un tenant con ese slug")
+
+    if not update:
+        return sb.table("tenants").select("*").eq("id", tenant_id).limit(1).execute().data[0]
+
+    sb.table("tenants").update(update).eq("id", tenant_id).execute()
+    return sb.table("tenants").select("*").eq("id", tenant_id).limit(1).execute().data[0]
+
+
+@api.post("/superadmin/tenants/{tenant_id}/deactivate")
+def superadmin_deactivate_tenant(
+    tenant_id: str,
+    user: CurrentUser = Depends(superadmin_required),
+    sb: Client = Depends(sb_dep),
+):
+    rows = sb.table("tenants").select("id").eq("id", tenant_id).limit(1).execute().data
+    if not rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    sb.table("tenants").update({"activo": False}).eq("id", tenant_id).execute()
+    return {"ok": True}
+
+
+@api.delete("/superadmin/tenants/{tenant_id}")
+def superadmin_delete_tenant(
+    tenant_id: str,
+    user: CurrentUser = Depends(superadmin_required),
+    sb: Client = Depends(sb_dep),
+):
+    rows = sb.table("tenants").select("id").eq("id", tenant_id).limit(1).execute().data
+    if not rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    # Delete dependent rows first (no ON DELETE CASCADE assumed).
+    for table in ("retos_progreso", "retos", "transacciones_puntos", "passes", "socios", "notificaciones", "comercios_aliados", "usuarios_admin"):
+        try:
+            sb.table(table).delete().eq("tenant_id", tenant_id).execute()
+        except Exception as e:
+            logger.warning(f"cleanup {table} failed: {e}")
+    sb.table("tenants").delete().eq("id", tenant_id).execute()
+    return {"ok": True}
 
 
 # ───────────────────────────── Helpers ─────────────────────────────

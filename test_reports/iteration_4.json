@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 4 — GeoPass MVP Phase 2 (Superadmin Panel) end-to-end testing complete. Backend: 17/17 NEW superadmin pytest cases PASS in /app/backend/tests/test_superadmin.py + 26/26 EXISTING regression tests PASS in test_geopass_api.py = 43/43 backend tests green. Coverage of new endpoints: GET /api/superadmin/stats (auth required + superadmin-only), GET /api/superadmin/tenants (returns array with socios_count, includes umania-demo), POST /api/superadmin/tenants (201 on success, 400 on bad plan, 409 on duplicate slug; admin_email seeds usuarios_admin record with rol='admin'), GET /api/superadmin/tenants/:id (returns {tenant, stats:{socios_count,notificaciones_count,puntos_emitidos}, recent_socios, admins} with seeded admin email confirmed in admins list), PATCH (200 on update + verified persistence via GET; 400 bad plan; 409 slug conflict with umania-demo), POST /:id/deactivate (sets activo=false verified via GET), DELETE /:id (200, then GET returns 404). Impersonation header X-Impersonate-Tenant-Id verified: when superadmin sends header, /api/auth/me returns swapped tenant_id+slug while keeping rol='superadmin'; /api/socios scoped to impersonated tenant (returns [] for fresh tenant, but returns 37 own socios when no header). FRONTEND e2e (Playwright on Chromium): full happy path executed against https://socio-hub-6.preview.emergentagent.com — login as pere → red SUPERADMIN badge in sidebar (2 instances) + 'Panel Superadmin' nav link → /superadmin shows 3 stat cards (sa-stat-tenants/socios/notif), tenant table with PlanBadge ENTERPRISE on umania-demo, '+ Nuevo tenant' button → /superadmin/tenants/new fills nombre 'TEST E2E e2e971721' → slug auto-generates to 'test-e2e-e2e971721' → PRO plan pill selected → lat/lng/admin email/admin nombre filled → submit redirects back to /superadmin with new row visible → click 'Ver panel' impersonates → /dashboard shows sidebar tenant 'TEST E2E e2e971721', 'IMPERSONANDO' chip + 'Salir' button, toast 'Accediendo como TEST E2E e2e971721', stat cards show 0 (correct, fresh tenant) → click 'Salir' clears impersonation, returns to /superadmin → /superadmin/tenants/:id loads detail with all fields prefilled, admin 'TEST E2E Admin' listed under 'Admins de este tenant', Guardar/Acceder/Desactivar/Eliminar buttons present (verified visually in screenshot). Cleanup performed via DELETE API. SuperadminRoute.jsx logic reviewed: redirects non-superadmins to /dashboard when profile.rol !== 'superadmin' — confirmed correct. NO regressions in existing flows.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_superadmin.py",
+    "/app/backend/tests/test_geopass_api.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/superadmin_results.xml",
+    "/app/test_reports/pytest/regression_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py grew to 1106 lines — consider splitting superadmin endpoints into a dedicated routers/superadmin.py module for maintainability (now ~12 endpoints in same file).",
+    "POST /api/superadmin/tenants admin seed (line 778-790) silently swallows exceptions in usuarios_admin insert with a logger.warning — currently fine because admin record is best-effort, but worth flagging in API docs that admin creation may silently fail (verified in tests it actually inserts).",
+    "Impersonation logic in get_current_user (server.py L131-134) correctly gates X-Impersonate-Tenant-Id by user.rol=='superadmin'; verified non-superadmins would have header IGNORED. SuperadminRoute.jsx gate is also correct (rol check). Good defense-in-depth (both server + client gate role checks).",
+    "DELETE cascade (line 908+) hard-deletes socios/passes/notificaciones/usuarios_admin/transacciones_puntos/comercios_aliados/retos — verified via 200 on DELETE + 404 on subsequent GET. No orphaned rows expected, but a DB-level transaction would be safer (current approach uses sequential supabase deletes which can leave partial state on mid-failure).",
+    "PATCH endpoint validates plan but should also validate slug format (currently only conflict-checks); a tenant could be patched to slug='@@@' which would still be accepted by API. Low risk because UI uses slugify().",
+    "Frontend Sidebar 'Impersonando' chip + Salir clear via stopImpersonating() correctly triggers AuthContext re-fetch — verified live."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_superadmin.py"
+  ],
+  "success_rate": {"backend": "100% (43/43 = 17 superadmin + 26 regression)", "frontend": "100% (login, sidebar SUPERADMIN+Panel Superadmin, /superadmin dashboard with 3 stats + tenant rows + Nuevo tenant, /superadmin/tenants/new with auto-slug + plan pills + lat/lng + admin fields + submit, impersonation Ver panel→/dashboard with chip+Salir, /superadmin/tenants/:id detail with prefilled form + Guardar/Acceder/Desactivar/Eliminar)"},
+  "test_credentials": "pere@umanialabs.com / 123456Ab!! (Supabase Auth, rol=superadmin, tenant=umania-demo) — works.",
+  "seed_data_creation": "Test created/cleaned up its own tenants. Backend tests create+delete via lifecycle, e2e UI test created tenant de34bef0-4757-477b-bd21-7cc2aa6a9ca9 then deleted via API cleanup. Final state: only umania-demo (37 socios) remains. Several TEST_admin_*@example.com usuarios_admin records were created during create-tenant tests and were removed by the corresponding test_delete_tenant cascade.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 (superadmin panel + impersonation) is fully verified backend + frontend. New regression suite at /app/backend/tests/test_superadmin.py (17 tests, ~21s runtime) covers: access control, list, CRUD lifecycle (create→get→patch→deactivate→delete), validation (bad plan 400, dup slug 409), and impersonation header behavior (swap tenant_id but keep rol='superadmin'; non-impersonated requests still see own tenant scope). Existing test_geopass_api.py (26 tests, ~79s) is unchanged and still passes. Frontend e2e validated via Playwright at https://socio-hub-6.preview.emergentagent.com — login + create→impersonate→salir→detail flows all work with the documented data-testids (sa-new-tenant, sa-stat-{tenants|socios|notif}, sa-tenant-row-{id}, sa-impersonate-{id}, sa-edit-{id}, sa-toggle-{id}, sa-form-{nombre|slug|plan-{val}|lat|lng|admin-email|admin-nombre|color1-text|color2-text|submit}, sa-edit-save, sa-deactivate, sa-delete, sa-confirm-delete-modal, sa-confirm-delete-btn). Only minor note: a Playwright `input_value()` race condition fired one timeout AFTER the detail page was clearly rendered (visible in screenshot) — pure test-script issue, not an app bug. SuperadminRoute.jsx redirects non-superadmins to /dashboard (confirmed by reading code). FCM still MOCKED. Railway pkpass still LIVE. No regressions in any existing flow."
+}

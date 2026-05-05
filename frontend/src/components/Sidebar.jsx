@@ -7,6 +7,8 @@ import {
   Building2,
   Settings,
   LogOut,
+  Shield,
+  Eye,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
@@ -19,12 +21,17 @@ const links = [
 ];
 
 export default function Sidebar({ open, onClose }) {
-  const { profile, logout } = useAuth();
+  const { profile, logout, isSuperadmin, impersonating, stopImpersonating } = useAuth();
   const navigate = useNavigate();
 
   const onLogout = async () => {
     await logout();
     navigate("/login");
+  };
+
+  const onStopImpersonating = async () => {
+    await stopImpersonating();
+    navigate("/superadmin");
   };
 
   return (
@@ -43,11 +50,22 @@ export default function Sidebar({ open, onClose }) {
           transform ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0
           transition-transform duration-300`}
       >
-        <div>
-          <div className="text-2xl gp-display gp-gradient-text">GeoPass™</div>
-          <div className="text-xs text-[var(--gp-muted)] tracking-wide mt-0.5">
-            by Umania Labs
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-2xl gp-display gp-gradient-text">GeoPass™</div>
+            <div className="text-xs text-[var(--gp-muted)] tracking-wide mt-0.5">
+              by Umania Labs
+            </div>
           </div>
+          {isSuperadmin && (
+            <span
+              className="inline-flex items-center gap-1 text-[0.6rem] font-bold uppercase tracking-widest px-2 py-1 rounded-full"
+              style={{ background: "rgba(255,80,80,0.12)", color: "#FF5050", border: "1px solid rgba(255,80,80,0.4)" }}
+              data-testid="superadmin-badge"
+            >
+              <Shield size={10} /> SUPERADMIN
+            </span>
+          )}
         </div>
 
         {profile && (
@@ -58,6 +76,20 @@ export default function Sidebar({ open, onClose }) {
             <div className="text-sm font-semibold mt-0.5" data-testid="sidebar-tenant">
               {profile.tenant?.nombre_marca}
             </div>
+            {impersonating && (
+              <div className="mt-2 flex items-center justify-between gap-2 pt-2 border-t border-[var(--gp-border)]">
+                <span className="inline-flex items-center gap-1 text-[0.65rem] uppercase tracking-wider text-[#F59E0B]">
+                  <Eye size={11} /> Impersonando
+                </span>
+                <button
+                  onClick={onStopImpersonating}
+                  className="text-[0.7rem] text-[var(--gp-primary)] hover:underline"
+                  data-testid="stop-impersonating-btn"
+                >
+                  Salir
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -74,6 +106,23 @@ export default function Sidebar({ open, onClose }) {
               <span className="text-sm">{label}</span>
             </NavLink>
           ))}
+
+          {isSuperadmin && !impersonating && (
+            <>
+              <div className="mt-4 mb-1 px-3 text-[0.65rem] uppercase tracking-widest text-[var(--gp-muted)]">
+                Umania Labs
+              </div>
+              <NavLink
+                to="/superadmin"
+                data-testid="nav-superadmin"
+                onClick={onClose}
+                className={({ isActive }) => `gp-nav-link ${isActive ? "active" : ""}`}
+              >
+                <Shield size={18} strokeWidth={1.8} />
+                <span className="text-sm">Panel Superadmin</span>
+              </NavLink>
+            </>
+          )}
         </nav>
 
         <div className="border-t border-[var(--gp-border)] pt-4">

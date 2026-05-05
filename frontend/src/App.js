@@ -12,6 +12,10 @@ import Notificaciones from "./pages/Notificaciones";
 import Aliados from "./pages/Aliados";
 import Configuracion from "./pages/Configuracion";
 import Registro from "./pages/Registro";
+import SuperadminDashboard from "./pages/SuperadminDashboard";
+import SuperadminTenantNew from "./pages/SuperadminTenantNew";
+import SuperadminTenantDetail from "./pages/SuperadminTenantDetail";
+import SuperadminRoute from "./components/SuperadminRoute";
 
 function App() {
   return (
@@ -78,6 +82,30 @@ function App() {
               <ProtectedRoute>
                 <Configuracion />
               </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/superadmin"
+            element={
+              <SuperadminRoute>
+                <SuperadminDashboard />
+              </SuperadminRoute>
+            }
+          />
+          <Route
+            path="/superadmin/tenants/new"
+            element={
+              <SuperadminRoute>
+                <SuperadminTenantNew />
+              </SuperadminRoute>
+            }
+          />
+          <Route
+            path="/superadmin/tenants/:id"
+            element={
+              <SuperadminRoute>
+                <SuperadminTenantDetail />
+              </SuperadminRoute>
             }
           />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
