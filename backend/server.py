@@ -61,6 +61,60 @@ print(f"[BOOT] RAILWAY_API_URL = {RAILWAY_API_URL or 'NOT SET'}", flush=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("geopass")
 
+
+# ───────────────────────────── Firebase Admin (FCM) ─────────────────────────────
+# Initialised lazily from the FIREBASE_SERVICE_ACCOUNT_JSON env var. If the env
+# var is missing or invalid, FCM falls back to mock mode (logged warning, no
+# crash) so the rest of the app keeps working.
+_FCM_READY = False
+try:
+    import firebase_admin
+    from firebase_admin import credentials as _fb_credentials, messaging as fcm_messaging
+
+    _fb_raw = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    if _fb_raw:
+        try:
+            _fb_dict = _json.loads(_fb_raw)
+            if not firebase_admin._apps:
+                firebase_admin.initialize_app(_fb_credentials.Certificate(_fb_dict))
+            _FCM_READY = True
+            logger.info(
+                "FCM initialised for project %s",
+                _fb_dict.get("project_id", "unknown"),
+            )
+        except Exception as e:
+            logger.warning("FCM init failed (will fall back to mock): %s", e)
+    else:
+        logger.warning("FIREBASE_SERVICE_ACCOUNT_JSON not set — FCM running in MOCK mode")
+except Exception as e:
+    logger.warning("firebase_admin not importable — FCM running in MOCK mode: %s", e)
+
+
+def send_fcm_notification(token: str, title: str, body: str) -> bool:
+    """Send a real FCM push to a single device token.
+
+    Returns True on success, False on any failure. Never raises. When
+    Firebase is not configured, logs a single line and returns False so the
+    caller treats it as a mocked / not-delivered send.
+    """
+    if not token:
+        return False
+    if not _FCM_READY:
+        logger.info("FCM MOCK send to %s…: %s — %s", token[:10], title, body[:40])
+        return False
+    try:
+        message = fcm_messaging.Message(
+            notification=fcm_messaging.Notification(title=title, body=body),
+            token=token,
+        )
+        message_id = fcm_messaging.send(message)
+        logger.info("FCM sent token=%s… message_id=%s", token[:10], message_id)
+        return True
+    except Exception as e:
+        logger.warning("FCM send failed token=%s… err=%s: %s", token[:10], type(e).__name__, e)
+        return False
+
+
 app = FastAPI(title="GeoPass API", default_response_class=UTF8JSONResponse)
 api = APIRouter(prefix="/api", default_response_class=UTF8JSONResponse)
 
@@ -209,6 +263,12 @@ class RegistroPublico(BaseModel):
     nombre: str
     email: EmailStr
     telefono: Optional[str] = None
+    push_token: Optional[str] = None
+
+
+class PushTokenUpdate(BaseModel):
+    serial_number: str
+    push_token: str
 
 
 # ───────────────────────────── Health ─────────────────────────────
@@ -533,8 +593,10 @@ def send_notification(
 
     if body.canal in ("fcm", "ambos"):
         for s in socios:
-            if s.get("push_token"):
-                # MOCKED: would call Firebase here in phase 2
+            tok = s.get("push_token")
+            if not tok:
+                continue
+            if send_fcm_notification(tok, body.titulo, body.mensaje):
                 sent_fcm += 1
 
     total = max(sent_wallet, sent_fcm) if body.canal == "ambos" else sent_wallet + sent_fcm
@@ -609,6 +671,17 @@ def public_registro(slug: str, body: RegistroPublico, sb: Client = Depends(sb_de
     socio, pkpass_b64 = _create_socio_full(
         sb, tenant, body.nombre, body.email, body.telefono, welcome_points=500, fetch_pkpass=True
     )
+
+    # Persist push_token immediately if the client sent one with registration.
+    if body.push_token:
+        try:
+            sb.table("socios").update({"push_token": body.push_token}).eq(
+                "id", socio["id"]
+            ).eq("tenant_id", tid).execute()
+            socio["push_token"] = body.push_token
+        except Exception as e:
+            logger.warning("registro push_token save failed: %s", e)
+
     return {
         "success": True,
         "socio_id": socio["id"],
@@ -620,6 +693,27 @@ def public_registro(slug: str, body: RegistroPublico, sb: Client = Depends(sb_de
         "pkpass_url": f"/api/passes/{socio['wallet_pass_serial']}/download",
         "tenant": tenant,
     }
+
+
+@api.post("/public/push-token")
+def public_update_push_token(body: PushTokenUpdate, sb: Client = Depends(sb_dep)):
+    """Public endpoint — update a socio's FCM push token using their wallet serial."""
+    if not body.push_token:
+        raise HTTPException(400, "push_token requerido")
+    rows = (
+        sb.table("socios")
+        .select("id, tenant_id")
+        .eq("wallet_pass_serial", body.serial_number)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(404, "Socio no encontrado")
+    sb.table("socios").update({"push_token": body.push_token}).eq(
+        "id", rows[0]["id"]
+    ).execute()
+    return {"ok": True}
 
 
 # ───────────────────────────── Wallet pass download ─────────────────────────────
