@@ -128,6 +128,14 @@ def _http_exception_handler(_request, exc: HTTPException):
     )
 
 
+# Root-level liveness probe — used by the Kubernetes/nginx ingress
+# health check at GET /health (without the /api prefix). Must respond
+# 200 instantly without touching any external service.
+@app.get("/health")
+def _liveness():
+    return {"status": "ok"}
+
+
 # ───────────────────────────── DI: Supabase clients ─────────────────────────────
 def sb_dep() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
