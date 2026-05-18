@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { publicApi } from "../lib/api";
 import { CheckCircle2, AlertTriangle, Bell, BellOff } from "lucide-react";
-import { getPushToken } from "../lib/firebase";
+import { getPushToken, listenForegroundMessages } from "../lib/firebase";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -120,6 +120,9 @@ export default function Registro() {
         push_token: token,
       });
       setPushStatus("enabled");
+      // Start listening for foreground pushes so they don't get silently
+      // dropped when the user is looking at this tab.
+      listenForegroundMessages();
     } catch {
       setPushStatus("error");
     }

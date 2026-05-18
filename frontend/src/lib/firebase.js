@@ -6,7 +6,7 @@
  * real secret stays on the backend (FIREBASE_SERVICE_ACCOUNT_JSON).
  */
 import { initializeApp, getApps } from "firebase/app";
-import { getMessaging, getToken, isSupported } from "firebase/messaging";
+import { getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
 
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -36,6 +36,49 @@ async function ensureMessaging() {
   ensureApp();
   _messaging = getMessaging();
   return _messaging;
+}
+
+/**
+ * Listen for FCM messages that arrive while the tab is in the FOREGROUND.
+ *
+ * The service worker only handles background pushes — when the page is
+ * visible, FCM delivers the payload here instead and the browser does NOT
+ * auto-render any notification. We bridge it to the Web Notification API
+ * so users see the message either way.
+ *
+ * @param {(payload: any) => void} [onAlso] optional callback (e.g. to update UI)
+ */
+export async function listenForegroundMessages(onAlso) {
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  const messaging = await ensureMessaging();
+  if (!messaging) return;
+  onMessage(messaging, (payload) => {
+    const title = payload?.notification?.title || "GeoPass™";
+    const body = payload?.notification?.body || "";
+    try {
+      // Prefer the SW registration so the notification is associated with
+      // the same SW that handles background ones (consistent behaviour,
+      // clickable on iOS PWAs, etc.).
+      navigator.serviceWorker
+        ?.getRegistration("/firebase-messaging-sw.js")
+        .then((reg) => {
+          if (reg) {
+            reg.showNotification(title, {
+              body,
+              icon: "/favicon.ico",
+              badge: "/favicon.ico",
+              data: payload?.data || {},
+            });
+          } else {
+            new Notification(title, { body, icon: "/favicon.ico" });
+          }
+        });
+    } catch {
+      // ignore
+    }
+    if (typeof onAlso === "function") onAlso(payload);
+  });
 }
 
 /**
