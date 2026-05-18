@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { publicApi } from "../lib/api";
-import { CheckCircle2, AlertTriangle } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Bell, BellOff } from "lucide-react";
+import { getPushToken } from "../lib/firebase";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 
@@ -47,6 +48,8 @@ export default function Registro() {
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState(null);
   const [error, setError] = useState("");
+  /* push: 'idle' | 'requesting' | 'enabled' | 'denied' | 'unsupported' | 'error' */
+  const [pushStatus, setPushStatus] = useState("idle");
 
   useEffect(() => {
     let active = true;
@@ -97,6 +100,28 @@ export default function Registro() {
       // Fallback: backend endpoint re-generates via Railway.
       const absolute = `${BACKEND_URL}${success.pkpass_url}`;
       window.location.href = absolute;
+    }
+  };
+
+  const handleEnablePush = async () => {
+    if (!success?.socio_serial) return;
+    setPushStatus("requesting");
+    const { token, status } = await getPushToken();
+    if (!token) {
+      // Map permission states to UX-friendly statuses
+      if (status === "denied") setPushStatus("denied");
+      else if (status === "unsupported") setPushStatus("unsupported");
+      else setPushStatus("error");
+      return;
+    }
+    try {
+      await publicApi.post("/public/push-token", {
+        serial_number: success.socio_serial,
+        push_token: token,
+      });
+      setPushStatus("enabled");
+    } catch {
+      setPushStatus("error");
     }
   };
 
@@ -215,6 +240,13 @@ export default function Registro() {
                     ? "Tu tarjeta está lista. Abre el archivo para añadirla a tu Wallet."
                     : "Si la tarjeta no se descarga, vuelve a pulsar el botón en unos segundos."}
                 </p>
+
+                {/* Web Push opt-in */}
+                <PushOptIn
+                  status={pushStatus}
+                  onEnable={handleEnablePush}
+                  primary={primary}
+                />
               </div>
             ) : (
               <form onSubmit={submit} className="flex flex-col gap-4">
@@ -293,5 +325,57 @@ export default function Registro() {
         </div>
       </div>
     </div>
+  );
+}
+
+function PushOptIn({ status, onEnable, primary }) {
+  if (status === "enabled") {
+    return (
+      <div
+        className="mt-4 w-full p-3 rounded-xl flex items-center gap-2 text-sm"
+        style={{ background: `${primary}14`, color: primary, border: `1px solid ${primary}40` }}
+        data-testid="push-enabled"
+      >
+        <Bell size={16} />
+        <span>Notificaciones activadas. Te avisaremos de promos y novedades.</span>
+      </div>
+    );
+  }
+  if (status === "denied") {
+    return (
+      <div
+        className="mt-4 w-full p-3 rounded-xl flex items-center gap-2 text-sm text-[var(--gp-warning)]"
+        style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.35)" }}
+        data-testid="push-denied"
+      >
+        <BellOff size={16} />
+        <span>
+          Permiso denegado. Actívalo desde los ajustes del navegador si cambias de idea.
+        </span>
+      </div>
+    );
+  }
+  if (status === "unsupported") {
+    return (
+      <p
+        className="mt-4 text-[0.7rem] text-[var(--gp-muted)] text-center"
+        data-testid="push-unsupported"
+      >
+        Las notificaciones web no están disponibles en este navegador.
+      </p>
+    );
+  }
+  return (
+    <button
+      onClick={onEnable}
+      disabled={status === "requesting"}
+      className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-full border text-sm font-semibold transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+      style={{ borderColor: primary, color: primary, background: "transparent" }}
+      data-testid="enable-push-btn"
+    >
+      <Bell size={16} />
+      {status === "requesting" ? "Pidiendo permiso..." : "Activar notificaciones"}
+      {status === "error" && <span className="text-xs opacity-70">— reintentar</span>}
+    </button>
   );
 }
