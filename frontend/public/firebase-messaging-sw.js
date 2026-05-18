@@ -7,7 +7,7 @@
  *
  * Served from /firebase-messaging-sw.js at the site root.
  */
-/* global importScripts firebase */
+/* global importScripts firebase self clients */
 importScripts("https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js");
 importScripts(
   "https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js",
@@ -25,17 +25,66 @@ firebase.initializeApp({
 
 const messaging = firebase.messaging();
 
-// Background message handler: render the system notification when no
-// foreground tab is visible. Firebase auto-shows the notification when
-// the payload is "notification"-shaped; this hook is for "data"-only.
+// Skip waiting so a freshly-deployed SW takes over the page on the next
+// load without requiring users to close every tab.
+self.addEventListener("install", (event) => {
+  // eslint-disable-next-line no-console
+  console.log("[FCM-SW] install");
+  self.skipWaiting();
+});
+self.addEventListener("activate", (event) => {
+  // eslint-disable-next-line no-console
+  console.log("[FCM-SW] activate");
+  event.waitUntil(self.clients.claim());
+});
+
+// Raw push event — useful to confirm Chrome is delivering to OUR SW at
+// all (fires before/regardless of onBackgroundMessage).
+self.addEventListener("push", (event) => {
+  let preview = "<no-data>";
+  try {
+    preview = event.data ? event.data.text().slice(0, 200) : preview;
+  } catch (e) {
+    preview = "<unreadable>";
+  }
+  // eslint-disable-next-line no-console
+  console.log("[FCM-SW] raw push event:", preview);
+});
+
+// Fires for data-only payloads (when the backend sends `data` instead of
+// `notification`). Browser does NOT auto-render anything; we control the
+// notification ourselves so behaviour is identical in foreground and
+// background.
 messaging.onBackgroundMessage((payload) => {
-  const title = payload?.notification?.title || "GeoPass™";
+  // eslint-disable-next-line no-console
+  console.log("[FCM-SW] onBackgroundMessage payload:", payload);
+  const data = payload && payload.data ? payload.data : {};
+  const title = data.title || (payload.notification && payload.notification.title) || "GeoPass™";
+  const body =
+    data.body || (payload.notification && payload.notification.body) || "";
   const options = {
-    body: payload?.notification?.body || "",
+    body,
     icon: "/favicon.ico",
     badge: "/favicon.ico",
-    data: payload?.data || {},
+    tag: data.tag || "geopass-notification",
+    renotify: true,
+    data: { ...data, click_url: data.click_url || "/" },
   };
-  // eslint-disable-next-line no-restricted-globals
   self.registration.showNotification(title, options);
+});
+
+// Click handler: focus the app or open it.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.click_url) || "/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
+      for (const client of windowClients) {
+        if (client.url.indexOf(self.location.origin) === 0) {
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(url);
+    }),
+  );
 });

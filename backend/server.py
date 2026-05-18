@@ -93,9 +93,10 @@ except Exception as e:
 def send_fcm_notification(token: str, title: str, body: str) -> bool:
     """Send a real FCM push to a single device token.
 
-    Returns True on success, False on any failure. Never raises. When
-    Firebase is not configured, logs a single line and returns False so the
-    caller treats it as a mocked / not-delivered send.
+    Uses a *data-only* payload so the message is always routed through the
+    app's onBackgroundMessage / onMessage handlers (and we control how the
+    notification renders, in both foreground and background). Returns True
+    on success, False on any failure. Never raises.
     """
     if not token:
         return False
@@ -104,8 +105,11 @@ def send_fcm_notification(token: str, title: str, body: str) -> bool:
         return False
     try:
         message = fcm_messaging.Message(
-            notification=fcm_messaging.Notification(title=title, body=body),
+            data={"title": title, "body": body, "click_url": "/"},
             token=token,
+            webpush=fcm_messaging.WebpushConfig(
+                headers={"Urgency": "high", "TTL": "300"},
+            ),
         )
         message_id = fcm_messaging.send(message)
         logger.info("FCM sent token=%s… message_id=%s", token[:10], message_id)

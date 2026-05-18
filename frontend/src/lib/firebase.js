@@ -59,8 +59,13 @@ export async function listenForegroundMessages(onAlso) {
   const messaging = await ensureMessaging();
   if (!messaging) return;
   _foregroundUnsubscribe = onMessage(messaging, (payload) => {
-    const title = payload?.notification?.title || "GeoPass™";
-    const body = payload?.notification?.body || "";
+    // eslint-disable-next-line no-console
+    console.log("[FCM] foreground message:", payload);
+    const data = (payload && payload.data) || {};
+    const title =
+      data.title || (payload.notification && payload.notification.title) || "GeoPass™";
+    const body =
+      data.body || (payload.notification && payload.notification.body) || "";
     try {
       navigator.serviceWorker
         ?.getRegistration("/firebase-messaging-sw.js")
@@ -70,15 +75,18 @@ export async function listenForegroundMessages(onAlso) {
               body,
               icon: "/favicon.ico",
               badge: "/favicon.ico",
-              data: payload?.data || {},
+              tag: data.tag || "geopass-notification",
+              renotify: true,
+              data: { ...data, click_url: data.click_url || "/" },
             });
           } else {
             // Fallback: use the Notification constructor directly.
             new Notification(title, { body, icon: "/favicon.ico" });
           }
         });
-    } catch {
-      // ignore
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[FCM] showNotification error:", e);
     }
     if (typeof onAlso === "function") onAlso(payload);
   });
