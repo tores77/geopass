@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Toaster } from "sonner";
 import "@/App.css";
@@ -16,8 +16,17 @@ import SuperadminDashboard from "./pages/SuperadminDashboard";
 import SuperadminTenantNew from "./pages/SuperadminTenantNew";
 import SuperadminTenantDetail from "./pages/SuperadminTenantDetail";
 import SuperadminRoute from "./components/SuperadminRoute";
+import { listenForegroundMessages } from "./lib/firebase";
 
 function App() {
+  // Attach the FCM foreground listener once at app startup for ANY tab that
+  // already has notification permission. Without this, pushes only render
+  // when the tab is in the background (SW path) — and any subsequent reload
+  // or navigation would silently drop foreground pushes.
+  useEffect(() => {
+    listenForegroundMessages();
+  }, []);
+
   return (
     <BrowserRouter>
       <AuthProvider>

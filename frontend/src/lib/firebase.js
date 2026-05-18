@@ -46,20 +46,22 @@ async function ensureMessaging() {
  * auto-render any notification. We bridge it to the Web Notification API
  * so users see the message either way.
  *
+ * Idempotent: calling more than once is a no-op after the first
+ * successful subscription. Safe to invoke on every page load.
+ *
  * @param {(payload: any) => void} [onAlso] optional callback (e.g. to update UI)
  */
+let _foregroundUnsubscribe = null;
 export async function listenForegroundMessages(onAlso) {
+  if (_foregroundUnsubscribe) return; // already listening
   if (typeof Notification === "undefined") return;
   if (Notification.permission !== "granted") return;
   const messaging = await ensureMessaging();
   if (!messaging) return;
-  onMessage(messaging, (payload) => {
+  _foregroundUnsubscribe = onMessage(messaging, (payload) => {
     const title = payload?.notification?.title || "GeoPass™";
     const body = payload?.notification?.body || "";
     try {
-      // Prefer the SW registration so the notification is associated with
-      // the same SW that handles background ones (consistent behaviour,
-      // clickable on iOS PWAs, etc.).
       navigator.serviceWorker
         ?.getRegistration("/firebase-messaging-sw.js")
         .then((reg) => {
@@ -71,6 +73,7 @@ export async function listenForegroundMessages(onAlso) {
               data: payload?.data || {},
             });
           } else {
+            // Fallback: use the Notification constructor directly.
             new Notification(title, { body, icon: "/favicon.ico" });
           }
         });
@@ -79,6 +82,8 @@ export async function listenForegroundMessages(onAlso) {
     }
     if (typeof onAlso === "function") onAlso(payload);
   });
+  // eslint-disable-next-line no-console
+  console.log("[FCM] foreground listener attached");
 }
 
 /**
