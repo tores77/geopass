@@ -141,6 +141,23 @@ export default function Login() {
                 {busy ? "Entrando..." : "Entrar al panel"}
               </button>
             </form>
+
+            <div className="flex items-center gap-3 my-5">
+              <div className="flex-1 h-px bg-[var(--gp-border)]" />
+              <span className="text-[0.65rem] uppercase tracking-widest text-[var(--gp-muted)]">
+                o
+              </span>
+              <div className="flex-1 h-px bg-[var(--gp-border)]" />
+            </div>
+
+            <Link
+              to="/onboarding"
+              data-testid="login-signup-link"
+              className="gp-btn-secondary w-full inline-flex items-center justify-center gap-2"
+            >
+              <Sparkles size={14} />
+              Crear cuenta gratis
+            </Link>
           </div>
 
           <div className="text-center text-xs text-[var(--gp-muted)] mt-6">

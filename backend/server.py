@@ -306,6 +306,18 @@ class PreviewPassRequest(BaseModel):
     logo_url: Optional[str] = None
 
 
+class OnboardingRequest(BaseModel):
+    nombre_marca: str = Field(min_length=2, max_length=80)
+    tipo_negocio: str = Field(min_length=1, max_length=40)
+    nombre_programa: str = Field(min_length=2, max_length=60)
+    color_primario: str = Field(min_length=4, max_length=9)
+    direccion: Optional[str] = Field(default=None, max_length=200)
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    email: EmailStr
+    password: str = Field(min_length=6, max_length=80)
+
+
 # In-memory sliding-window rate limiter for the preview endpoint. Keyed by
 # tenant_id with a deque of UTC timestamps from the last hour. Resets on
 # process restart, which is acceptable for an unauthenticated preview path.
@@ -784,6 +796,154 @@ def send_notification(
     }
 
 
+# ───────────────────────────── Public: onboarding ─────────────────────────────
+import re as _re
+import secrets as _secrets
+
+
+def _slugify(name: str) -> str:
+    """Lowercase, ascii-only, hyphenated slug. Empty fallback to 'negocio'."""
+    s = name.strip().lower()
+    s = _re.sub(r"[áàä]", "a", s)
+    s = _re.sub(r"[éèë]", "e", s)
+    s = _re.sub(r"[íìï]", "i", s)
+    s = _re.sub(r"[óòö]", "o", s)
+    s = _re.sub(r"[úùü]", "u", s)
+    s = _re.sub(r"[ñ]", "n", s)
+    s = _re.sub(r"[^a-z0-9]+", "-", s)
+    s = _re.sub(r"-+", "-", s).strip("-")
+    return s[:48] or "negocio"
+
+
+def _unique_slug(sb: Client, base: str) -> str:
+    """Return a slug that doesn't collide with any existing tenant.slug."""
+    candidate = base
+    for _ in range(8):
+        rows = (
+            sb.table("tenants").select("id").eq("slug", candidate).limit(1).execute().data
+        )
+        if not rows:
+            return candidate
+        candidate = f"{base}-{_secrets.token_hex(2)}"
+    # Fallback — extremely unlikely.
+    return f"{base}-{_secrets.token_hex(4)}"
+
+
+async def _geocode_address(address: str) -> tuple[Optional[float], Optional[float]]:
+    """Best-effort lookup via Nominatim (OSM). Returns (None, None) on any
+    failure so onboarding never blocks on geocoding hiccups."""
+    if not address or not address.strip():
+        return None, None
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            r = await client.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": address, "format": "json", "limit": 1},
+                headers={"User-Agent": "GeoPass/1.0 (geopass@umanialabs.com)"},
+            )
+        if r.status_code >= 400:
+            return None, None
+        data = r.json()
+        if not data:
+            return None, None
+        return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception as e:
+        logger.info("geocode failed (silenced): %s", e)
+        return None, None
+
+
+@api.post("/public/onboarding")
+async def public_onboarding(body: OnboardingRequest, sb: Client = Depends(sb_dep)):
+    """Single-call tenant + admin user creation flow used by /onboarding.
+
+    Steps:
+      1. Create Supabase Auth user (email_confirm=True so they can log in
+         immediately, no email round-trip required).
+      2. Generate a unique slug from nombre_marca.
+      3. Geocode the address (best-effort; nulls are fine).
+      4. Insert into tenants and usuarios_admin (rolling back the auth user
+         on any failure so the caller can retry cleanly).
+      5. Return slug + redirect_url.
+    """
+    # 1) Create auth user.
+    try:
+        created = sb.auth.admin.create_user(
+            {
+                "email": body.email,
+                "password": body.password,
+                "email_confirm": True,
+            }
+        )
+        auth_user = created.user
+        if not auth_user:
+            raise HTTPException(500, "No se pudo crear la cuenta")
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e).lower()
+        if "already" in msg or "registered" in msg or "exists" in msg or "duplicate" in msg:
+            raise HTTPException(409, "Este email ya tiene una cuenta. Inicia sesión.")
+        logger.warning("onboarding auth.create_user failed: %s", e)
+        raise HTTPException(500, "No se pudo crear la cuenta")
+
+    # 2) Slug.
+    slug = _unique_slug(sb, _slugify(body.nombre_marca))
+
+    # 3) Geocode (best-effort). Prefer caller-provided lat/lng if present
+    # (geolocation API on the client is more accurate than text geocoding).
+    lat, lng = body.lat, body.lng
+    if (lat is None or lng is None) and body.direccion:
+        lat, lng = await _geocode_address(body.direccion)
+
+    # 4) Persist tenant + admin. Roll back the auth user on failure.
+    try:
+        tenant_payload = {
+            "nombre_marca": body.nombre_marca.strip(),
+            "slug": slug,
+            "plan": "starter",
+            "color_primario": body.color_primario,
+            "color_secundario": "#0EA5E9",
+            "nombre_programa": body.nombre_programa.strip(),
+            "tipo_negocio": body.tipo_negocio.strip(),
+            "direccion": body.direccion.strip() if body.direccion else None,
+            "lat": lat,
+            "lng": lng,
+            "activo": True,
+        }
+        inserted = sb.table("tenants").insert(tenant_payload).execute().data
+        if not inserted:
+            raise RuntimeError("tenant insert returned no rows")
+        tenant = inserted[0]
+
+        sb.table("usuarios_admin").insert(
+            {
+                "tenant_id": tenant["id"],
+                "email": body.email,
+                "nombre": body.nombre_marca.strip(),
+                "rol": "admin",
+                "activo": True,
+            }
+        ).execute()
+    except Exception as e:
+        logger.warning("onboarding tenant/admin insert failed, rolling back auth user: %s", e)
+        try:
+            sb.auth.admin.delete_user(auth_user.id)
+        except Exception as rollback_err:
+            logger.warning("auth user rollback failed: %s", rollback_err)
+        # Most common cause: missing columns (run the migration) or schema mismatch.
+        raise HTTPException(
+            500,
+            "No se pudo finalizar el alta. Verifica que la migración de onboarding esté aplicada en Supabase.",
+        )
+
+    return {
+        "success": True,
+        "tenant_slug": slug,
+        "tenant_id": tenant["id"],
+        "redirect_url": "/dashboard",
+    }
+
+
 # ───────────────────────────── Public: tenant + registro ─────────────────────────────
 @api.get("/public/tenants/{slug}")
 def public_tenant(slug: str, sb: Client = Depends(sb_dep)):
@@ -1000,7 +1160,7 @@ def download_pass(serial_number: str, sb: Client = Depends(sb_dep)):
 
 
 # ───────────────────────────── Superadmin (Umania Labs) ─────────────────────────────
-ALLOWED_PLANS = {"basic", "pro", "enterprise"}
+ALLOWED_PLANS = {"starter", "basic", "pro", "enterprise"}
 
 
 @api.get("/superadmin/stats")

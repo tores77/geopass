@@ -14,6 +14,7 @@ import Configuracion from "./pages/Configuracion";
 import ConfiguracionTarjeta from "./pages/ConfiguracionTarjeta";
 import Registro from "./pages/Registro";
 import PreviewPass from "./pages/PreviewPass";
+import Onboarding from "./pages/Onboarding";
 import SuperadminDashboard from "./pages/SuperadminDashboard";
 import SuperadminTenantNew from "./pages/SuperadminTenantNew";
 import SuperadminTenantDetail from "./pages/SuperadminTenantDetail";
@@ -48,6 +49,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/registro/:tenant_slug" element={<Registro />} />
           <Route path="/preview-pass/:tenant_slug" element={<PreviewPass />} />
+          <Route path="/onboarding" element={<Onboarding />} />
           <Route
             path="/dashboard"
             element={
