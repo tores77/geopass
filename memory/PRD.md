@@ -38,6 +38,7 @@ degradation), FCM mocked in Phase 1.
 - `POST /api/public/registro/:slug` — public registration with 500 welcome points + pass + transaccion (tipo='registro')
 - **NEW (Feb 2026):** `GET /api/tenant/card-config`, `PATCH /api/tenant/card-config` — card configurator endpoints; calls Railway `/passes/update-template` best-effort after save
 - **NEW (Feb 2026):** `POST /api/public/preview-pass` + `GET /api/public/preview-pass/{slug}` — public preview-pass endpoints (no auth, rate-limited 10/hour/tenant). POST accepts unsaved config and returns base64 pkpass; GET returns binary pkpass for saved tenant config (Content-Type `application/vnd.apple.pkpass`).
+- **NEW (Feb 2026):** `POST /api/public/onboarding` — single-shot self-serve sign-up. Creates Supabase Auth user (admin API), unique slug from `nombre_marca`, geocodes address via Nominatim (best-effort), inserts `tenants` (plan='starter') + `usuarios_admin`. Auth user is rolled back on tenant/admin insert failure. Returns `{success, tenant_slug, tenant_id, redirect_url:'/dashboard'}`.
 
 ### Frontend (React + Tailwind)
 - `/login` — Supabase Auth login
@@ -49,6 +50,7 @@ degradation), FCM mocked in Phase 1.
 - `/configuracion` — tenant info, registro QR (download/copy/open)
 - **NEW (Feb 2026):** `/configuracion-tarjeta` ("Mi tarjeta") — card configurator with live wallet-pass preview (color primary/secondary, logo upload, program name, geopush message+radius slider 50-500m, template selector PUNTOS/SELLOS/NIVELES/DESCUENTO), QR section with logo overlay, and **"Vista previa en móvil" button** that opens a modal with a QR pointing to `/preview-pass/:slug` so the admin can scan with their iPhone and see the real card in Apple Wallet before publishing
 - **NEW (Feb 2026):** `/preview-pass/:tenant_slug` (public) — landing page that immediately downloads a throw-away pkpass via the public backend endpoint so iPhone Safari opens it in Wallet
+- **NEW (Feb 2026):** `/onboarding` (public) — full-screen conversational sign-up agent. 6 steps (nombre_marca, tipo_negocio, nombre_programa, color, dirección+geo, email+password) with chat bubble history, progress bar, live wallet-card preview that updates with color choice in real time. Login page also gets a "Crear cuenta gratis" button linking here.
 - `/registro/:tenant_slug` — PUBLIC branded registration with success state, 500 welcome puntos, "Añadir a Wallet" CTA
 
 ### Design System
@@ -57,11 +59,12 @@ degradation), FCM mocked in Phase 1.
 - Custom `.gp-*` utility classes for cards/buttons/inputs/tables/nivel-pills
 
 ## Test Results
-- **Backend** — 43/43 tests passing (26 original regression + 10 card-config + 7 preview-pass), 100% pass
-- **Frontend** — 100% of critical flows verified end-to-end (incl. Mi tarjeta + Mobile preview modal)
+- **Backend** — 54/54 tests passing (26 original regression + 10 card-config + 7 preview-pass + 11 onboarding), 100% pass
+- **Frontend** — 100% of critical flows verified end-to-end (incl. Mi tarjeta, Mobile preview modal, Onboarding 6-step flow)
 
 ## Schema additions
-- **Feb 2026** — Added to `tenants`: `nombre_programa TEXT`, `mensaje_geopush TEXT`, `radio_geopush INTEGER DEFAULT 150`, `plantilla_fidelizacion TEXT DEFAULT 'puntos'`. Migration at `/app/backend/migrations/2026_02_card_config.sql` (applied to production Supabase).
+- **Feb 2026 (card config)** — Added to `tenants`: `nombre_programa TEXT`, `mensaje_geopush TEXT`, `radio_geopush INTEGER DEFAULT 150`, `plantilla_fidelizacion TEXT DEFAULT 'puntos'`. Migration at `/app/backend/migrations/2026_02_card_config.sql` (applied to production Supabase).
+- **Feb 2026 (onboarding)** — Added to `tenants`: `tipo_negocio TEXT`, `direccion TEXT`; extended `tenants_plan_check` constraint to include `'starter'`. Migration at `/app/backend/migrations/2026_02_onboarding.sql` (applied).
 
 ## Known Notes
 - FCM push delivery: **MOCKED** in Phase 1. Notifications are recorded in

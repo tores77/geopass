@@ -310,7 +310,7 @@ export default function Onboarding() {
             <div className="text-xs uppercase tracking-widest text-[var(--gp-muted)] mb-3 text-center">
               Tu tarjeta — vista previa
             </div>
-            <OnboardingPreview data={data} />
+            <OnboardingPreview data={data} variant="desktop" />
           </div>
         </div>
 
@@ -320,7 +320,7 @@ export default function Onboarding() {
             <div className="text-xs uppercase tracking-widest text-[var(--gp-muted)] mb-3 text-center">
               Tu tarjeta — vista previa
             </div>
-            <OnboardingPreview data={data} />
+            <OnboardingPreview data={data} variant="mobile" />
           </div>
         )}
       </div>
@@ -346,6 +346,15 @@ function TextStep({ value, onChange, placeholder, maxLength, testid }) {
 }
 
 function PillSelect({ options, value, onChange, testid }) {
+  // Normalize accents so testid stems match the slugifier on the backend
+  // (e.g. "Cafetería" → "cafeteria"), keeping discoverability symmetric.
+  const slug = (s) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
   return (
     <div className="flex flex-wrap gap-2" data-testid={testid}>
       {options.map((opt) => {
@@ -355,7 +364,7 @@ function PillSelect({ options, value, onChange, testid }) {
             key={opt}
             type="button"
             onClick={() => onChange(opt)}
-            data-testid={`${testid}-${opt.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+            data-testid={`${testid}-${slug(opt)}`}
             className={`px-4 py-2 rounded-full text-sm font-medium border transition-all ${
               active
                 ? "border-[var(--gp-primary)] bg-[rgba(0,229,160,0.08)] text-[var(--gp-primary)]"
@@ -609,7 +618,7 @@ function StepCard({ step, children }) {
 
 /* ──────────────────────────── Card preview ──────────────────────────── */
 
-function OnboardingPreview({ data }) {
+function OnboardingPreview({ data, variant = "desktop" }) {
   const primary = data.color_primario || "#00E5A0";
   const headerLabel = "PUNTOS";
   const textColor = isLight(primary) ? "#0d0d1a" : "#ffffff";
@@ -618,7 +627,7 @@ function OnboardingPreview({ data }) {
   return (
     <div className="flex justify-center">
       <div
-        data-testid="onb-pass-preview"
+        data-testid={`onb-pass-preview-${variant}`}
         className="w-full max-w-[340px] aspect-[1.586/2] rounded-[28px] p-5 flex flex-col justify-between shadow-[0_30px_80px_-20px_rgba(0,0,0,0.7)] relative overflow-hidden transition-all duration-500"
         style={{
           background: `linear-gradient(155deg, ${primary} 0%, ${darken(primary, 0.15)} 100%)`,
