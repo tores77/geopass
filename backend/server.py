@@ -890,9 +890,15 @@ def public_preview_pass_post(body: PreviewPassRequest, sb: Client = Depends(sb_d
     panel before "Guardar y publicar"). Returns the pkpass as base64. No
     data is written to Supabase. Rate-limited per tenant_id."""
     _preview_rate_check(body.tenant_id)
-    rows = (
-        sb.table("tenants").select("*").eq("id", body.tenant_id).limit(1).execute().data
-    )
+    try:
+        rows = (
+            sb.table("tenants").select("*").eq("id", body.tenant_id).limit(1).execute().data
+        )
+    except Exception as e:
+        # Most commonly: malformed UUID rejected by Postgres before we can
+        # filter. Treat as "not found" so the public endpoint never 500s.
+        logger.info("preview-pass tenant lookup failed: %s", e)
+        raise HTTPException(404, "Tenant no encontrado")
     if not rows:
         raise HTTPException(404, "Tenant no encontrado")
     tenant = rows[0]

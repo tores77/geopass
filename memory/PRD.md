@@ -37,6 +37,7 @@ degradation), FCM mocked in Phase 1.
 - `GET /api/public/tenants/:slug` — public tenant branding
 - `POST /api/public/registro/:slug` — public registration with 500 welcome points + pass + transaccion (tipo='registro')
 - **NEW (Feb 2026):** `GET /api/tenant/card-config`, `PATCH /api/tenant/card-config` — card configurator endpoints; calls Railway `/passes/update-template` best-effort after save
+- **NEW (Feb 2026):** `POST /api/public/preview-pass` + `GET /api/public/preview-pass/{slug}` — public preview-pass endpoints (no auth, rate-limited 10/hour/tenant). POST accepts unsaved config and returns base64 pkpass; GET returns binary pkpass for saved tenant config (Content-Type `application/vnd.apple.pkpass`).
 
 ### Frontend (React + Tailwind)
 - `/login` — Supabase Auth login
@@ -46,7 +47,8 @@ degradation), FCM mocked in Phase 1.
 - `/notificaciones` — full list of sent notifications
 - `/aliados` — Phase 2 placeholder
 - `/configuracion` — tenant info, registro QR (download/copy/open)
-- **NEW (Feb 2026):** `/configuracion-tarjeta` ("Mi tarjeta") — card configurator with live wallet-pass preview (color primary/secondary, logo upload, program name, geopush message+radius slider 50-500m, template selector PUNTOS/SELLOS/NIVELES/DESCUENTO), QR section with logo overlay
+- **NEW (Feb 2026):** `/configuracion-tarjeta` ("Mi tarjeta") — card configurator with live wallet-pass preview (color primary/secondary, logo upload, program name, geopush message+radius slider 50-500m, template selector PUNTOS/SELLOS/NIVELES/DESCUENTO), QR section with logo overlay, and **"Vista previa en móvil" button** that opens a modal with a QR pointing to `/preview-pass/:slug` so the admin can scan with their iPhone and see the real card in Apple Wallet before publishing
+- **NEW (Feb 2026):** `/preview-pass/:tenant_slug` (public) — landing page that immediately downloads a throw-away pkpass via the public backend endpoint so iPhone Safari opens it in Wallet
 - `/registro/:tenant_slug` — PUBLIC branded registration with success state, 500 welcome puntos, "Añadir a Wallet" CTA
 
 ### Design System
@@ -55,8 +57,8 @@ degradation), FCM mocked in Phase 1.
 - Custom `.gp-*` utility classes for cards/buttons/inputs/tables/nivel-pills
 
 ## Test Results
-- **Backend** — 36/36 tests passing (26 regression + 10 new card-config), 100% pass
-- **Frontend** — 100% of critical flows verified end-to-end (incl. Mi tarjeta)
+- **Backend** — 43/43 tests passing (26 original regression + 10 card-config + 7 preview-pass), 100% pass
+- **Frontend** — 100% of critical flows verified end-to-end (incl. Mi tarjeta + Mobile preview modal)
 
 ## Schema additions
 - **Feb 2026** — Added to `tenants`: `nombre_programa TEXT`, `mensaje_geopush TEXT`, `radio_geopush INTEGER DEFAULT 150`, `plantilla_fidelizacion TEXT DEFAULT 'puntos'`. Migration at `/app/backend/migrations/2026_02_card_config.sql` (applied to production Supabase).
