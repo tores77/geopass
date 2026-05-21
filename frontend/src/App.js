@@ -13,6 +13,7 @@ import Aliados from "./pages/Aliados";
 import Configuracion from "./pages/Configuracion";
 import ConfiguracionTarjeta from "./pages/ConfiguracionTarjeta";
 import Registro from "./pages/Registro";
+import PreviewPass from "./pages/PreviewPass";
 import SuperadminDashboard from "./pages/SuperadminDashboard";
 import SuperadminTenantNew from "./pages/SuperadminTenantNew";
 import SuperadminTenantDetail from "./pages/SuperadminTenantDetail";
@@ -46,6 +47,7 @@ function App() {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/login" element={<Login />} />
           <Route path="/registro/:tenant_slug" element={<Registro />} />
+          <Route path="/preview-pass/:tenant_slug" element={<PreviewPass />} />
           <Route
             path="/dashboard"
             element={

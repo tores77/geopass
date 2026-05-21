@@ -15,6 +15,8 @@ import {
   Layers,
   Percent,
   Loader2,
+  Smartphone,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -43,6 +45,7 @@ export default function ConfiguracionTarjeta() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -259,12 +262,20 @@ export default function ConfiguracionTarjeta() {
                 </div>
               </Field>
 
-              <div className="flex justify-end mt-7 pt-5 border-t border-[var(--gp-border)]">
+              <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-7 pt-5 border-t border-[var(--gp-border)]">
+                <button
+                  data-testid="btn-preview-mobile"
+                  type="button"
+                  onClick={() => setPreviewOpen(true)}
+                  className="gp-btn-secondary inline-flex items-center justify-center gap-2"
+                >
+                  <Smartphone size={15} /> Vista previa en móvil
+                </button>
                 <button
                   data-testid="btn-save-card"
                   onClick={onSave}
                   disabled={saving}
-                  className="gp-btn-primary inline-flex items-center gap-2"
+                  className="gp-btn-primary inline-flex items-center justify-center gap-2"
                 >
                   {saving ? (
                     <Loader2 size={15} className="animate-spin" />
@@ -288,6 +299,12 @@ export default function ConfiguracionTarjeta() {
           <QRSection config={config} />
         </section>
       </div>
+
+      <MobilePreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        slug={config.slug}
+      />
     </Layout>
   );
 }
@@ -623,6 +640,78 @@ function QRSection({ config }) {
         >
           <Copy size={14} /> Copiar enlace
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────── Mobile preview modal ────────────────────────── */
+
+function MobilePreviewModal({ open, onClose, slug }) {
+  if (!open) return null;
+  const url =
+    typeof window !== "undefined" && slug
+      ? `${window.location.origin}/preview-pass/${slug}?preview=1`
+      : "";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+      data-testid="preview-modal"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="gp-card w-full max-w-md p-7 relative gp-fade-up"
+      >
+        <button
+          onClick={onClose}
+          className="absolute top-4 right-4 text-[var(--gp-muted)] hover:text-[var(--gp-text)]"
+          data-testid="preview-modal-close"
+          aria-label="Cerrar"
+        >
+          <X size={20} />
+        </button>
+
+        <div className="flex flex-col items-center text-center">
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center bg-[rgba(0,229,160,0.12)] border border-[var(--gp-primary)]/30 mb-3">
+            <Smartphone size={22} className="text-[var(--gp-primary)]" />
+          </div>
+          <h2 className="text-xl gp-display">Escanea con tu iPhone</h2>
+          <p className="text-sm text-[var(--gp-muted)] mt-1 max-w-xs">
+            Verás la tarjeta real en Apple Wallet — exactamente como la
+            recibirán tus socios.
+          </p>
+
+          {url ? (
+            <div
+              className="bg-white p-4 rounded-2xl mt-5"
+              data-testid="preview-qr-canvas"
+            >
+              <QRCodeCanvas
+                value={url}
+                size={260}
+                fgColor="#0d0d1a"
+                bgColor="#ffffff"
+                level="M"
+              />
+            </div>
+          ) : (
+            <div className="text-sm text-[var(--gp-muted)] mt-5">
+              Cargando…
+            </div>
+          )}
+
+          <div className="mt-5 px-3 py-2.5 rounded-lg bg-[rgba(245,158,11,0.08)] border border-[var(--gp-warning)]/30 text-left">
+            <p className="text-[0.78rem] text-[var(--gp-text)] leading-relaxed">
+              <span className="font-semibold text-[var(--gp-warning)]">
+                Vista previa temporal.
+              </span>{" "}
+              Los cambios no se guardan hasta que pulses{" "}
+              <span className="font-semibold">Guardar y publicar</span>.
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );

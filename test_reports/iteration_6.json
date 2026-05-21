@@ -1,0 +1,41 @@
+{
+  "summary": "Full e2e validation of the 'Vista previa en móvil' feature. Backend: 7/7 new preview-pass tests pass (POST success with overlay, no-auth, no DB writes, 404 unknown tenant, GET binary pkpass + correct MIME, 404 unknown slug, rate-limit 11th=>429); 10/10 prior card_config regression tests still pass. Frontend: btn-preview-mobile renders on /configuracion-tarjeta with phone icon + secondary style, modal opens/closes via X and backdrop, QR canvas is 260x260 (≥250), heading 'Escanea con tu iPhone' + temporal-preview warning + 'Guardar y publicar' mention all present, public /preview-pass/umania-demo route renders without login redirect and manual link points to the expected backend URL. Restored umania-demo tenant config to defaults at end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/public/preview-pass", "issue": "Returns 500 (instead of 404) when tenant_id is not a valid UUID string — Supabase rejects the .eq('id', '<non-uuid>') query and the exception bubbles up unwrapped. Fix: validate tenant_id format with Pydantic (UUID) or catch the PostgrestAPIError and re-raise as 404."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_preview_pass.py",
+    "/app/test_reports/pytest/preview_pass_results.xml"
+  ],
+  "action_items": [
+    "(Optional, low priority) Validate PreviewPassRequest.tenant_id as a UUID via Pydantic so malformed IDs return 422/404 instead of 500.",
+    "(Carry-over from iteration_5) Consider Literal[...] enum for plantilla_fidelizacion in TenantCardConfig.",
+    "(Carry-over) server.py is now 1425 lines — split into routers."
+  ],
+  "critical_code_review_comments": [
+    "server.py L316-328: _preview_rate_check uses an in-memory dict + deque. Documented as acceptable, but in a multi-worker deployment the 10/hour cap is per-worker, so real cap = workers × 10. Fine for single-process MVP, but flag if scaled with gunicorn -w >1.",
+    "server.py L892: rate-limit check runs BEFORE the tenant lookup. This is correct DoS-prevention behaviour, but means malformed/unknown tenant_ids still consume bucket slots — that's only an issue if an attacker spams a specific id; the documented behaviour is fine.",
+    "PreviewPass.jsx L19-28: 600ms setTimeout before window.location.href is good UX. The 12s fallback shows a manual retry — solid.",
+    "ConfiguracionTarjeta.jsx L654: QR url uses window.location.origin which correctly yields the public app URL (verified at runtime). No hardcoded URLs.",
+    "MobilePreviewModal: backdrop click closes correctly via stopPropagation on inner card — verified in e2e.",
+    "Backend Response: GET /api/public/preview-pass/{slug} sets Cache-Control: no-store and Content-Disposition attachment — good for forcing Safari to hand off to Apple Wallet."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_preview_pass.py (new)"
+  ],
+  "success_rate": {"backend": "100% (7/7 new preview-pass + 10/10 card_config regression)", "frontend": "100% (all checks pass)"},
+  "test_credentials": "pere@umanialabs.com / 123456Ab!! (read from /app/memory/test_credentials.md)",
+  "seed_data_creation": "No new seed data created. Card config was found dirty (Club TEST Configurador / #FF6600 / radio 250 / descuento) from the prior card_config persistence test run and was RESTORED to defaults at the end: Club de socios, #00E5A0, #0EA5E9, '', radio 150, plantilla 'puntos'.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Preview-pass endpoints: POST /api/public/preview-pass (body: tenant_id [+ optional overlay fields color_primario, color_secundario, nombre_programa, plantilla_fidelizacion, logo_url], returns {ok, pkpass_base64}); GET /api/public/preview-pass/{slug} returns binary pkpass with Content-Type application/vnd.apple.pkpass. Both are PUBLIC (no auth). Rate-limited per tenant_id in-memory sliding window 10/hour. Frontend page: /preview-pass/:tenant_slug PUBLIC route renders 'Abriendo tu tarjeta en Apple Wallet...' and auto-redirects to the GET endpoint after 600ms. Admin entry-point: btn-preview-mobile button on /configuracion-tarjeta opens MobilePreviewModal with a 260x260 QR encoding `${window.location.origin}/preview-pass/${slug}?preview=1`. Test data-testids: btn-preview-mobile, preview-modal, preview-modal-close, preview-qr-canvas, preview-manual-link. Note: backend returns 500 on non-UUID tenant_id (Supabase rejects malformed UUIDs) — minor.",
+  "rca_of_the_issue": "N/A — no functional bugs found. Minor: non-UUID tenant_id triggers 500 instead of 404 because Postgres uuid column rejects malformed input and the exception is not caught; reproduce with POST /api/public/preview-pass {'tenant_id':'not-a-uuid'} -> 500. Mitigation: declare tenant_id: UUID in PreviewPassRequest or wrap the Supabase call in try/except PostgrestAPIError → raise HTTPException(404)."
+}

@@ -297,6 +297,37 @@ class PushTokenUpdate(BaseModel):
     push_token: str
 
 
+class PreviewPassRequest(BaseModel):
+    tenant_id: str
+    color_primario: Optional[str] = None
+    color_secundario: Optional[str] = None
+    nombre_programa: Optional[str] = None
+    plantilla_fidelizacion: Optional[str] = None
+    logo_url: Optional[str] = None
+
+
+# In-memory sliding-window rate limiter for the preview endpoint. Keyed by
+# tenant_id with a deque of UTC timestamps from the last hour. Resets on
+# process restart, which is acceptable for an unauthenticated preview path.
+_PREVIEW_RATE: dict = {}
+_PREVIEW_MAX_PER_HOUR = 10
+
+
+def _preview_rate_check(tenant_id: str) -> None:
+    from collections import deque
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - 3600
+    bucket = _PREVIEW_RATE.setdefault(tenant_id, deque())
+    while bucket and bucket[0] < cutoff:
+        bucket.popleft()
+    if len(bucket) >= _PREVIEW_MAX_PER_HOUR:
+        raise HTTPException(
+            429,
+            f"Demasiadas vistas previas en la última hora (máx {_PREVIEW_MAX_PER_HOUR}). Vuelve a intentarlo más tarde.",
+        )
+    bucket.append(now.timestamp())
+
+
 # ───────────────────────────── Health ─────────────────────────────
 @api.get("/")
 def root():
@@ -837,6 +868,72 @@ def public_update_push_token(body: PushTokenUpdate, sb: Client = Depends(sb_dep)
         "id", rows[0]["id"]
     ).execute()
     return {"ok": True}
+
+
+# ───────────────────────────── Public: preview pass ─────────────────────────────
+def _build_preview_pass(tenant: dict) -> Optional[bytes]:
+    """Generate a throw-away pkpass with dummy socio data using the given
+    tenant branding. Nothing is persisted in the DB."""
+    fake_socio = {
+        "id": "preview",
+        "nombre": "Vista previa",
+        "puntos": 1250,
+        "nivel": "oro",
+        "wallet_pass_serial": f"preview-{tenant['id']}-{int(datetime.now(timezone.utc).timestamp())}",
+    }
+    return _generate_pkpass_bytes(fake_socio, tenant)
+
+
+@api.post("/public/preview-pass")
+def public_preview_pass_post(body: PreviewPassRequest, sb: Client = Depends(sb_dep)):
+    """Preview a pass with arbitrary unsaved config (called from the admin
+    panel before "Guardar y publicar"). Returns the pkpass as base64. No
+    data is written to Supabase. Rate-limited per tenant_id."""
+    _preview_rate_check(body.tenant_id)
+    rows = (
+        sb.table("tenants").select("*").eq("id", body.tenant_id).limit(1).execute().data
+    )
+    if not rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    tenant = rows[0]
+    # Overlay caller-provided (unsaved) values on top of the persisted tenant.
+    for k in ("color_primario", "color_secundario", "nombre_programa", "plantilla_fidelizacion", "logo_url"):
+        v = getattr(body, k, None)
+        if v is not None:
+            tenant[k] = v
+
+    pkpass_bytes = _build_preview_pass(tenant)
+    if not pkpass_bytes:
+        raise HTTPException(503, "No se pudo generar la vista previa. Reintenta en unos segundos.")
+    return {
+        "ok": True,
+        "pkpass_base64": base64.b64encode(pkpass_bytes).decode("ascii"),
+    }
+
+
+@api.get("/public/preview-pass/{slug}")
+def public_preview_pass_get(slug: str, sb: Client = Depends(sb_dep)):
+    """Preview a pass using the currently SAVED tenant config. Returns the
+    pkpass binary directly so the iPhone opens it in Apple Wallet via the
+    /preview-pass/:slug frontend page (or by hitting this URL directly).
+    Rate-limited per tenant_id."""
+    rows = sb.table("tenants").select("*").eq("slug", slug).limit(1).execute().data
+    if not rows or not rows[0].get("activo"):
+        raise HTTPException(404, "Tenant no encontrado")
+    tenant = rows[0]
+    _preview_rate_check(tenant["id"])
+
+    pkpass_bytes = _build_preview_pass(tenant)
+    if not pkpass_bytes:
+        raise HTTPException(503, "No se pudo generar la vista previa. Reintenta en unos segundos.")
+    return Response(
+        content=pkpass_bytes,
+        media_type="application/vnd.apple.pkpass",
+        headers={
+            "Content-Disposition": f'attachment; filename="geopass-preview-{slug}.pkpass"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ───────────────────────────── Wallet pass download ─────────────────────────────
