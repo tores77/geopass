@@ -1,0 +1,46 @@
+{
+  "summary": "Full validation of the new /onboarding flow. Backend: 11/11 new onboarding tests pass (happy path, /auth/me with new credentials, dup email 409, 3x 422 validation, slug accents+collision, real-address geocoding to Madrid coords, bogus address null, explicit lat/lng wins). 17/17 prior tests (card_config + preview_pass) still pass — no regression. Frontend: /onboarding loads as a public route, all 6 steps work (text input gating, pill select, suggestion chip populates input, color swatch updates preview gradient in real time + shows check icon, dirección + locate button, email/pwd validation), chat history of prior Q+A is rendered, finishing the flow auto signs-in and lands on /dashboard with the new tenant brand in the sidebar; /login has 'Crear cuenta gratis' [data-testid=login-signup-link] that navigates to /onboarding; an authenticated session visiting /onboarding is redirected to /dashboard; no regressions on /dashboard, /configuracion-tarjeta, /preview-pass.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Onboarding card preview", "issue": "data-testid='onb-pass-preview' is rendered TWICE in the DOM (desktop right column + mobile-below copy). One is hidden via Tailwind 'hidden lg:block' wrapper, but the testid being on both inner cards triggers Playwright strict-mode violations. Suggest unique testids (onb-pass-preview-desktop / onb-pass-preview-mobile) or move the testid to the wrapper.", "selector": "[data-testid='onb-pass-preview']", "priority": "LOW"},
+      {"component": "Onboarding tipo_negocio pills", "issue": "Pill data-testids do NOT strip accents — 'Cafetería' → 'onb-tipo-negocio-cafeter-a' (hyphen mid-word), 'Clínica' → 'onb-tipo-negocio-cl-nica', 'Peluquería' → 'onb-tipo-negocio-peluquer-a'. The backend slugifier strips them correctly. Recommend using the same accent-normalization in the testid generator at Onboarding.jsx L358 for consistency and discoverability.", "selector": "[data-testid='onb-tipo-negocio-*']", "priority": "LOW"},
+      {"component": "Onboarding pass preview SOCIO row", "issue": "After step 2 the preview's bottom-right ID slot displays the selected tipo_negocio in uppercase (e.g. 'RESTAURANTE') instead of an ID-style label. Minor cosmetic — visible in screenshot but matches the existing card layout, may be by design.", "selector": "[data-testid='onb-pass-preview']", "priority": "INFO"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_onboarding.py",
+    "/app/test_reports/pytest/onboarding_results.xml"
+  ],
+  "action_items": [
+    "(Optional, LOW) Onboarding.jsx L358: normalize accents (á/é/í/ó/ú/ñ → a/e/i/o/u/n) before regex-replace so tipo_negocio testids match Spanish word stems (cafeteria, clinica, peluqueria).",
+    "(Optional, LOW) Disambiguate the two onb-pass-preview elements so Playwright / RTL queries don't hit strict-mode violations.",
+    "(Carry-over) server.py is now 1592 lines — still grow-worthy and would benefit from a split into routers (public, admin, super, public_onboarding)."
+  ],
+  "critical_code_review_comments": [
+    "server.py L869-887: auth.create_user → on 'duplicate' substring match we return 409 with a Spanish message. Verified via real call; works. The substring match (any of 'already'/'registered'/'exists'/'duplicate') is broad but correct for Supabase wording today — flag if Supabase ever localizes its admin error strings.",
+    "server.py L894-896: caller-provided lat/lng correctly short-circuits the Nominatim call (verified: Barcelona coords (41.38, 2.17) won despite 'Calle Mayor, Madrid' direccion).",
+    "server.py L898-937: tenant insert → admin insert is wrapped in a single try block with auth user rollback. Note: if the *admin* insert fails AFTER the *tenant* insert succeeds, the tenant row is NOT rolled back — only the auth user. This leaves an orphan tenant with no admin user. Consider a second compensating delete on tenants[id] in that branch. (Hard to hit in practice but worth documenting.)",
+    "server.py _slugify L804: accent map only covers lowercased vowels + ñ; uppercase Ñ/Á etc. are normalized indirectly via .lower() first — verified by Café Niño Sí → cafe-nino-si. Good.",
+    "Onboarding.jsx onLocate: 8s geolocation timeout, error toast on failure, sets direccion to 'Ubicación detectada por GPS' if empty — solid UX.",
+    "Onboarding.jsx onFinish auto-signs-in via supabase.auth.signInWithPassword then navigates to /dashboard — fallback to /login with toast on failure. Verified happy path uses dashboard branch (sidebar shows new tenant name + email)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_onboarding.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (11/11 new onboarding + 17/17 regression)",
+    "frontend": "100% (all 6 steps, navigation, redirects, regression checks pass)"
+  },
+  "test_credentials": "pere@umanialabs.com / 123456Ab!! (from /app/memory/test_credentials.md). Fresh emails per onboarding run: e2e-{timestamp}@example.com.",
+  "seed_data_creation": "Test created ~10 transient tenants + auth users during the run. Cleanup ran successfully: pytest module fixture removed its own data, and an extra cleanup script removed 10 e2e-* auth users and 1 leftover tenant (e2e-cafe-1779358734) from the Playwright happy-path. DB is clean; umania-demo and other production tenants untouched.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Onboarding endpoint: POST /api/public/onboarding (public, no auth). Required fields: nombre_marca (≥2), tipo_negocio, nombre_programa (≥2), color_primario (#xxxxxx), email, password (≥6). Optional: direccion, lat, lng. Returns {success, tenant_slug, tenant_id, redirect_url:'/dashboard'}. On success creates: (a) Supabase Auth user with email_confirm=true, (b) tenants row with plan='starter' (requires migration 2026_02_onboarding.sql), (c) usuarios_admin row with rol='admin'. Slug from _slugify(nombre_marca) normalized via accent map (á→a, ñ→n, etc) lowercased + hyphenated, max 48 chars; collision adds 2-byte hex suffix. Geocoding: Nominatim best-effort, fails silently to null. Frontend page /onboarding is the conversational UI; key testids: onb-progress, onb-prompt-{1..6}, onb-step-{1..6}, onb-nombre-marca, onb-tipo-negocio-{restaurante|gimnasio|tienda|otro|club-deportivo} (accented ones use weird mid-word hyphens — Cafetería → cafeter-a, Clínica → cl-nica, Peluquería → peluquer-a), onb-nombre-programa, onb-programa-suggest-club-de-socios, onb-color-presets, onb-color-{hex} (e.g. onb-color-ef4444), onb-color-picker, onb-color-hex, onb-direccion, onb-locate, onb-email, onb-password, onb-continue, onb-finish, onb-pass-preview (DUPLICATED — use .first), onb-preview-marca, onb-go-login. On Login page: login-signup-link → /onboarding. After finish, code does supabase.auth.signInWithPassword then navigate to /dashboard; fallback /login on signin failure.",
+  "rca_of_the_issue": "N/A — no functional bugs. Two minor frontend code-quality items: (1) duplicate data-testid='onb-pass-preview' (desktop+mobile copies both have the same testid) causing strict-mode locator violations — reproducible by `await page.locator('[data-testid=onb-pass-preview]').evaluate(...)` without .first; (2) testid generator for tipo_negocio pills doesn't normalize accents before regex-replace, producing odd mid-word hyphens for Spanish accented options (cafeter-a, cl-nica, peluquer-a). Both LOW priority — happy path and all assertions pass when using .first / unaccented options."
+}
