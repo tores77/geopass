@@ -11,6 +11,7 @@ import SocioDetail from "./pages/SocioDetail";
 import Notificaciones from "./pages/Notificaciones";
 import Aliados from "./pages/Aliados";
 import Configuracion from "./pages/Configuracion";
+import ConfiguracionTarjeta from "./pages/ConfiguracionTarjeta";
 import Registro from "./pages/Registro";
 import SuperadminDashboard from "./pages/SuperadminDashboard";
 import SuperadminTenantNew from "./pages/SuperadminTenantNew";
@@ -90,6 +91,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Configuracion />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/configuracion-tarjeta"
+            element={
+              <ProtectedRoute>
+                <ConfiguracionTarjeta />
               </ProtectedRoute>
             }
           />

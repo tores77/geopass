@@ -9,11 +9,13 @@ import {
   LogOut,
   Shield,
   Eye,
+  CreditCard,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 
 const links = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testid: "nav-dashboard" },
+  { to: "/configuracion-tarjeta", label: "Mi tarjeta", icon: CreditCard, testid: "nav-mi-tarjeta" },
   { to: "/socios", label: "Socios", icon: Users, testid: "nav-socios" },
   { to: "/notificaciones", label: "Notificaciones", icon: Bell, testid: "nav-notificaciones" },
   { to: "/aliados", label: "Comercios aliados", icon: Building2, testid: "nav-aliados" },

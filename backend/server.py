@@ -271,6 +271,20 @@ class TenantUpdate(BaseModel):
     activo: Optional[bool] = None
 
 
+# Card configurator (per-tenant, edited via /configuracion-tarjeta)
+ALLOWED_TEMPLATES = {"puntos", "sellos", "niveles", "descuento"}
+
+
+class TenantCardConfig(BaseModel):
+    nombre_programa: Optional[str] = Field(default=None, max_length=60)
+    color_primario: Optional[str] = None
+    color_secundario: Optional[str] = None
+    logo_url: Optional[str] = None
+    mensaje_geopush: Optional[str] = Field(default=None, max_length=60)
+    radio_geopush: Optional[int] = Field(default=None, ge=50, le=500)
+    plantilla_fidelizacion: Optional[str] = None
+
+
 class RegistroPublico(BaseModel):
     nombre: str
     email: EmailStr
@@ -359,6 +373,103 @@ def auth_me(user: CurrentUser = Depends(get_current_user)):
         "rol": user.rol,
         "tenant_id": user.tenant_id,
         "tenant": user.tenant,
+    }
+
+
+# ───────────────────────────── Tenant card configurator ─────────────────────────────
+def _card_config_from_tenant(t: dict) -> dict:
+    """Project a tenant row to the card-configurator shape with sane defaults."""
+    return {
+        "nombre_marca": t.get("nombre_marca"),
+        "slug": t.get("slug"),
+        "logo_url": t.get("logo_url"),
+        "color_primario": t.get("color_primario") or "#00E5A0",
+        "color_secundario": t.get("color_secundario") or "#0EA5E9",
+        "nombre_programa": t.get("nombre_programa") or "Club de socios",
+        "mensaje_geopush": t.get("mensaje_geopush") or "",
+        "radio_geopush": t.get("radio_geopush") or 150,
+        "plantilla_fidelizacion": t.get("plantilla_fidelizacion") or "puntos",
+    }
+
+
+@api.get("/tenant/card-config")
+def get_card_config(
+    user: CurrentUser = Depends(get_current_user), sb: Client = Depends(sb_dep)
+):
+    rows = (
+        sb.table("tenants").select("*").eq("id", user.tenant_id).limit(1).execute().data
+    )
+    if not rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    return _card_config_from_tenant(rows[0])
+
+
+def _trigger_railway_template_update(tenant: dict) -> dict:
+    """Fire-and-forget call to Railway so it regenerates active passes with
+    the new branding. Failures are swallowed and reported in the response so
+    the UI can still confirm the DB save succeeded."""
+    if not RAILWAY_API_URL:
+        return {"ok": False, "reason": "RAILWAY_API_URL not configured"}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            r = client.post(
+                f"{RAILWAY_API_URL}/passes/update-template",
+                json={
+                    "tenant_id": tenant["id"],
+                    "nombre_marca": tenant.get("nombre_marca"),
+                    "nombre_programa": tenant.get("nombre_programa"),
+                    "color_primario": tenant.get("color_primario"),
+                    "color_secundario": tenant.get("color_secundario"),
+                    "logo_url": tenant.get("logo_url"),
+                    "mensaje_geopush": tenant.get("mensaje_geopush"),
+                    "radio_geopush": tenant.get("radio_geopush"),
+                    "plantilla_fidelizacion": tenant.get("plantilla_fidelizacion"),
+                },
+            )
+        return {"ok": r.status_code < 400, "status": r.status_code}
+    except Exception as e:
+        logger.info("railway update-template failed (silenced): %s", e)
+        return {"ok": False, "reason": str(e)[:200]}
+
+
+@api.patch("/tenant/card-config")
+def update_card_config(
+    body: TenantCardConfig,
+    user: CurrentUser = Depends(get_current_user),
+    sb: Client = Depends(sb_dep),
+):
+    update = body.model_dump(exclude_unset=True)
+    if "plantilla_fidelizacion" in update and update["plantilla_fidelizacion"] not in ALLOWED_TEMPLATES:
+        raise HTTPException(
+            400,
+            f"Plantilla inválida. Permitidas: {', '.join(sorted(ALLOWED_TEMPLATES))}",
+        )
+
+    if update:
+        try:
+            sb.table("tenants").update(update).eq("id", user.tenant_id).execute()
+        except Exception as e:
+            # Most likely cause: the migration 2026_02_card_config.sql has
+            # not been applied yet so one of the new columns doesn't exist.
+            logger.warning("card-config update failed: %s", e)
+            raise HTTPException(
+                500,
+                "No se pudo guardar la configuración. Verifica que la migración "
+                "de Supabase para 'Mi tarjeta' esté aplicada.",
+            )
+
+    tenant_rows = (
+        sb.table("tenants").select("*").eq("id", user.tenant_id).limit(1).execute().data
+    )
+    if not tenant_rows:
+        raise HTTPException(404, "Tenant no encontrado")
+    tenant = tenant_rows[0]
+
+    railway_status = _trigger_railway_template_update(tenant)
+    return {
+        "ok": True,
+        "config": _card_config_from_tenant(tenant),
+        "railway": railway_status,
     }
 
 
@@ -1040,12 +1151,18 @@ def _build_pass_payload(socio: dict, tenant: dict) -> dict:
         "puntos": socio.get("puntos", 0),
         "nivel": socio.get("nivel") or "basico",
         "nombre_marca": tenant.get("nombre_marca"),
+        "nombre_programa": tenant.get("nombre_programa") or "Club de socios",
+        "color_primario": tenant.get("color_primario"),
+        "color_secundario": tenant.get("color_secundario"),
+        "logo_url": tenant.get("logo_url"),
+        "plantilla_fidelizacion": tenant.get("plantilla_fidelizacion") or "puntos",
+        "mensaje_geopush": tenant.get("mensaje_geopush"),
     }
     # Optional geopush coordinates — only included if the tenant has them.
     if tenant.get("lat") is not None and tenant.get("lng") is not None:
         payload["lat"] = tenant["lat"]
         payload["lng"] = tenant["lng"]
-        payload["radio_metros"] = 150
+        payload["radio_metros"] = tenant.get("radio_geopush") or 150
     return payload
 
 
