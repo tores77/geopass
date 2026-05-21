@@ -36,6 +36,7 @@ degradation), FCM mocked in Phase 1.
 - `GET /api/notificaciones`, `POST /api/notificaciones/send` (canal: wallet/fcm/ambos, optional socio_id)
 - `GET /api/public/tenants/:slug` — public tenant branding
 - `POST /api/public/registro/:slug` — public registration with 500 welcome points + pass + transaccion (tipo='registro')
+- **NEW (Feb 2026):** `GET /api/tenant/card-config`, `PATCH /api/tenant/card-config` — card configurator endpoints; calls Railway `/passes/update-template` best-effort after save
 
 ### Frontend (React + Tailwind)
 - `/login` — Supabase Auth login
@@ -45,6 +46,7 @@ degradation), FCM mocked in Phase 1.
 - `/notificaciones` — full list of sent notifications
 - `/aliados` — Phase 2 placeholder
 - `/configuracion` — tenant info, registro QR (download/copy/open)
+- **NEW (Feb 2026):** `/configuracion-tarjeta` ("Mi tarjeta") — card configurator with live wallet-pass preview (color primary/secondary, logo upload, program name, geopush message+radius slider 50-500m, template selector PUNTOS/SELLOS/NIVELES/DESCUENTO), QR section with logo overlay
 - `/registro/:tenant_slug` — PUBLIC branded registration with success state, 500 welcome puntos, "Añadir a Wallet" CTA
 
 ### Design System
@@ -53,8 +55,11 @@ degradation), FCM mocked in Phase 1.
 - Custom `.gp-*` utility classes for cards/buttons/inputs/tables/nivel-pills
 
 ## Test Results
-- **Backend** — 23/23 pytest cases + 2/2 concurrency burst tests, 100% pass
-- **Frontend** — 100% of critical flows verified end-to-end
+- **Backend** — 36/36 tests passing (26 regression + 10 new card-config), 100% pass
+- **Frontend** — 100% of critical flows verified end-to-end (incl. Mi tarjeta)
+
+## Schema additions
+- **Feb 2026** — Added to `tenants`: `nombre_programa TEXT`, `mensaje_geopush TEXT`, `radio_geopush INTEGER DEFAULT 150`, `plantilla_fidelizacion TEXT DEFAULT 'puntos'`. Migration at `/app/backend/migrations/2026_02_card_config.sql` (applied to production Supabase).
 
 ## Known Notes
 - FCM push delivery: **MOCKED** in Phase 1. Notifications are recorded in
